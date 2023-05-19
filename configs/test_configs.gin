@@ -1,0 +1,13 @@
+create_dataloader.batch_size = 1000
+create_dataloader.train_split = 0.95
+create_dataloader.test_split = 0.05
+create_dataloader.num_workers = 6
+create_dataloader.shuffle = True
+
+FgLSTM.embedding_size = 300
+FgLSTM.hidden_lstm = 300
+FgLSTM.hidden1_nn = 100
+FgLSTM.hidden2_nn = 50
+FgLSTM.output_size = 1
+FgLSTM.lstm_size = 3
+FgLSTM.dropout = 0
