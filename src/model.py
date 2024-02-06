@@ -32,7 +32,7 @@ class FgLSTM(nn.Module):
         seq_lengths = seq_lengths.cpu() # Need to convert to cpu for pack_padded_sequence
         
         x_emb = self.embedding(x)
-        c_emb = self.c_embedding(x)
+        c_emb = self.c_embedding(c)
         c_emb = c_emb * c.unsqueeze(2)
         x = torch.cat((x_emb, c_emb), dim=2)
 

@@ -67,8 +67,7 @@ def create_dataloader(price, smiles, features, batch_size: int, train_split: flo
     features, counts = pad_features(features, counts)
     X_train, X_test, counts_train, counts_test, smi_train, smi_test, y_train, y_test = train_test_split(features, counts, smiles, price, train_size=train_split, test_size=test_split,random_state=42)
     # Create valid set from train_set which is 1% of train set
-    X_train, X_valid, counts_train, counts_valid, smi_train, smi_valid, y_train, y_valid = train_test_split(X_train, counts_train, smi_train, y_train, train_size=0.95, test_size=0.05, random_state=42)
-    X_train, counts_train, smi_train, y_train = X_train[:100000], counts_train[:100000], smi_train[:100000], y_train[:100000]
+    X_train, X_valid, counts_train, counts_valid, smi_train, smi_valid, y_train, y_valid = train_test_split(X_train, counts_train, smi_train, y_train, train_size=0.99, test_size=0.01, random_state=42)
     # Create a dataset object for each set
     train_dataset = FGDataset(X_train, counts_train, y_train, smi_train)
     valid_dataset = FGDataset(X_valid, counts_valid, y_valid, smi_valid)
