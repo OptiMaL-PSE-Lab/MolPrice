@@ -25,7 +25,7 @@ class FgLSTM(nn.Module):
             nn.Linear(hidden2_nn, output_size)
         )
 
-    def forward(self, x, c=None):
+    def forward(self, x, c):
         seq_lengths, perm_idx = self.obtain_seq_ordering(x)
         x = x[perm_idx]
         c = c[perm_idx]

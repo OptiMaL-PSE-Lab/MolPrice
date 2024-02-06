@@ -63,7 +63,7 @@ class FGDataset(Dataset):
 def create_dataloader(price, smiles, features, batch_size: int, train_split: float, test_split:float, shuffle: bool, num_workers:int):
     # Create a train and test set
     price, smiles, features = remove_empty_features(price, smiles, features)
-    _features, counts = feat_and_count(features)
+    features, counts = feat_and_count(features)
     features, counts = pad_features(features, counts)
     X_train, X_test, counts_train, counts_test, smi_train, smi_test, y_train, y_test = train_test_split(features, counts, smiles, price, train_size=train_split, test_size=test_split,random_state=42)
     # Create valid set from train_set which is 1% of train set
