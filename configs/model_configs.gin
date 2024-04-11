@@ -1,0 +1,46 @@
+import gin.torch.external_configurables
+
+# Training Parameters
+main.max_epoch = 200
+main.early_stopping = True
+main.patience = 10
+main.no_gpus = 0
+main.logging = True
+
+# Model Hyperparameters
+
+# Constants 
+optimizer = @torch.optim.Adam
+lr = 2e-4
+
+
+# input and count size are max values for the embedding layer
+LSTM.input_size = 1000
+LSTM.count_size = 100
+LSTM.embedding_size = 300
+LSTM.hidden_lstm = 300
+LSTM.hidden1_nn = 100
+LSTM.hidden2_nn = 50
+LSTM.output_size = 1
+LSTM.lstm_size = 3
+LSTM.dropout = 0.1
+LSTM.configure_optimizers.optimizer = %optimizer
+lstm/torch.optim.Adam.lr = %lr
+
+FP.hidden_size_1 = 1000
+FP.hidden_size_2 = 500
+FP.configure_optimizers.optimizer = %optimizer
+fp/torch.optim.Adam.lr = %lr
+
+# again, transformer input size is a max value for the embedding
+Transformer.input_size = 600
+Transformer.embedding_size = 400
+Transformer.num_heads = 5
+Transformer.hidden_size = 400
+Transformer.num_layers = 3
+Transformer.dropout = 0.1
+Transformer.configure_optimizers.optimizer = @transformer/torch.optim.AdamW
+Transformer.configure_optimizers.decay_rate = 0.98
+Transformer.configure_optimizers.warmup_epochs = 5
+transformer/torch.optim.AdamW.lr = 2e-5
+

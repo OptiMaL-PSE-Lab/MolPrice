@@ -1,0 +1,28 @@
+batch_size = 64
+num_workers = 8
+data_split = [0.8, 0.1, 0.1]
+df_name = "chemspace_reduced"
+
+EFGLoader.batch_size = %batch_size
+EFGLoader.num_workers = %num_workers
+EFGLoader.data_split = %data_split
+EFGLoader.df_name = %df_name
+
+IFGLoader.batch_size = %batch_size
+IFGLoader.num_workers = %num_workers
+IFGLoader.data_split = %data_split
+IFGLoader.df_name = %df_name
+
+FPLoader.fp_type = 'morgan'
+FPLoader.fp_size = 1024
+FPLoader.p_r_size = 3
+FPLoader.count_simulation = True
+FPLoader.batch_size = %batch_size
+FPLoader.num_workers = %num_workers
+FPLoader.data_split = %data_split
+FPLoader.df_name = %df_name
+
+TFLoader.batch_size = %batch_size
+TFLoader.num_workers = %num_workers
+TFLoader.data_split = %data_split
+TFLoader.df_name = %df_name

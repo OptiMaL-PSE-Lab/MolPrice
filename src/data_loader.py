@@ -1,80 +1,493 @@
-# Load data into correct pytorch dataloader 
+import pickle
+from abc import abstractmethod
 from collections import Counter
+from multiprocessing import Pool, Manager
+from pathlib import Path
+from tqdm import tqdm
+from typing import Optional, Sequence
 
 import gin
+import numpy as np
+import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from rdkit import Chem
+from rdkit.Chem import rdFingerprintGenerator  # type: ignore
+from lightning.pytorch import LightningDataModule
+from torch import LongTensor, FloatTensor
+from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
-from sklearn.model_selection import train_test_split 
-from src.definitions import CONFIGS_DIR
 
-# One function to remove empty rows from the data and deletes according smiles
+from EFGs import mol2frag, cleavage
+from src.rdkit_ifg import identify_functional_groups as ifg
+from src.model_utils import Tokenizer
 
-def pad_features(features, counts):
-    """ 
-    Create a function to convert a list of variable-length features to a padded sequence
-    """
-    # Convert features to a list of tensors and get their lengths
-    features = [torch.LongTensor(feature) for feature in features]
-    counts = [torch.LongTensor(count) for count in counts]
-
-    padded_features = pad_sequence(features, batch_first=True, padding_value=0)
-    padded_counts = pad_sequence(counts, batch_first=True, padding_value=0)
-
-    return padded_features, padded_counts
-
-
-def remove_empty_features(price, smiles, features):
-    """ 
-    Takes a list of features and records indeces where all features are zero. 
-    Removes these indeces from both the features tensor and price tensor
-    """
-    if len(smiles) != len(features):
-        raise ValueError("Smiles and features must be the same length")
-    
-    price, smiles, features = zip(*[(price[idx], smiles[idx], features[idx]) for idx, i in enumerate(features) if i])
-    return price, smiles,features
-
-def feat_and_count(features):
-    """ 
-    Takes a list of features and counts the number of each feature
-    """
-    features = [Counter(f) for f in features]
-    count = [list(f.values()) for f in features]
-    features = [list(f.keys()) for f in features]
-    return features, count
 
 class FGDataset(Dataset):
-    def __init__(self, features,counts, price, smiles):
-        price = torch.FloatTensor(price)
-        price = price.view(-1,1)
-        self.smiles = smiles
-        self.c = counts
-        self.X = features
-        self.y = price
-        
+    def __init__(
+        self, price: FloatTensor, features: LongTensor, counts: Optional[LongTensor]
+    ):
+        self.price = price
+        self.features = features
+        self.counts = counts
+
     def __len__(self):
-        return len(self.y)
-    
+        return len(self.price)
+
     def __getitem__(self, idx):
-        return {"X":self.X[idx], "c": self.c[idx], "y": self.y[idx]}
+        if self.counts is None:
+            return {"X": self.features[idx], "y": self.price[idx]}
+        else:
+            return {
+                "X": self.features[idx],
+                "y": self.price[idx],
+                "c": self.counts[idx],
+            }
 
-@gin.configurable(denylist=["price", "smiles", "features"])
-def create_dataloader(price, smiles, features, batch_size: int, train_split: float, test_split:float, shuffle: bool, num_workers:int):
-    # Create a train and test set
-    price, smiles, features = remove_empty_features(price, smiles, features)
-    features, counts = feat_and_count(features)
-    features, counts = pad_features(features, counts)
-    X_train, X_test, counts_train, counts_test, smi_train, smi_test, y_train, y_test = train_test_split(features, counts, smiles, price, train_size=train_split, test_size=test_split,random_state=42)
-    # Create valid set from train_set which is 1% of train set
-    X_train, X_valid, counts_train, counts_valid, smi_train, smi_valid, y_train, y_valid = train_test_split(X_train, counts_train, smi_train, y_train, train_size=0.99, test_size=0.01, random_state=42)
-    # Create a dataset object for each set
-    train_dataset = FGDataset(X_train, counts_train, y_train, smi_train)
-    valid_dataset = FGDataset(X_valid, counts_valid, y_valid, smi_valid)
-    test_dataset = FGDataset(X_test, counts_test, y_test, smi_test)
 
-    # Create a dataloader object for each set
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
-    return train_loader, valid_loader, test_loader
+class CustomDataLoader(LightningDataModule):
+    def __init__(
+        self,
+        data_path: Path,
+        feature_path: Path,
+        batch_size: int,
+        num_workers: int,
+        data_split: list[float],
+        df_name: str,
+    ) -> None:
+        super().__init__()
+        self.data_path = data_path
+        self.feature_path = feature_path
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.data_split = data_split
+        self.mydataset: Dataset
+        self.train_data: Subset
+        self.val_data: Subset
+        self.test_data: Subset
+
+        self.dataframe: Path = self.data_path / f"{df_name}.csv"
+
+    def prepare_data(self):
+
+        if not self.feature_path.exists():
+            self.feature_path.mkdir(parents=True, exist_ok=True)
+            price, features, counts = self.generate_features()
+            # ensure that everything is of the same length and features are non empty
+            price = self.get_price()
+            if len(price) != len(features):
+                raise ValueError("Features and price must be the same length")
+        else:
+            pass
+
+    def setup(self, stage: str) -> None:
+        # dimensions are: price (n, 1), features (n, m), counts (n, m)
+        self.mydataset = FGDataset(*self.load_features())
+        self.train_data, self.val_data, self.test_data = random_split(
+            self.mydataset, self.data_split, generator=torch.Generator().manual_seed(42)
+        )
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_data,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val_data,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test_data,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+        )
+
+    # * holding df in memory is slowing down pool -> use getter instead
+    def get_smiles(self) -> list[str]:
+        df = pd.read_csv(self.dataframe)
+        return df["smi_can"].tolist()
+
+    def get_price(self) -> np.ndarray:
+        """
+        Returns the log price of the molecules / mmol
+        """
+        df = pd.read_csv(self.dataframe)
+        return df["price_mmol"].apply(np.log).values  # type: ignore
+
+    @abstractmethod
+    def generate_features() -> tuple[FloatTensor, LongTensor, Optional[LongTensor]]:
+        pass
+
+    @abstractmethod
+    def load_features() -> tuple[FloatTensor, LongTensor, Optional[LongTensor]]:
+        pass
+
+
+@gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
+class EFGLoader(CustomDataLoader):
+    def __init__(
+        self, data_path, feature_path, batch_size, num_workers, data_split, df_name
+    ) -> None:
+        feature_path = feature_path / "features_EFG"
+        super().__init__(
+            data_path, feature_path, batch_size, num_workers, data_split, df_name
+        )
+        self.vocab = Manager().dict()
+        self.vocab_path = data_path / "vocab" / "vocab_EFG.pkl"
+
+    def load_features(self):
+        # load from pickled features
+        with open(self.feature_path / "features_EFG.pkl", "rb") as f:
+            efg_features = pickle.load(f)
+
+        return efg_features["price"], efg_features["features"], efg_features["counts"]
+
+    def generate_features(self):
+        # To create the feature vectors, there are 4 steps necesssary:
+        # 1. Generate the vocabulary and reduce the size if desired
+        # 2. Create the feature vectors based on the vocab
+        # 3. Clean up empty features along with their pricing
+        smiles = self.get_smiles()
+        # check if vocab already exists
+        if self.vocab_path.exists():
+            print("Loading vocabulary for EFGs")
+            with open(self.vocab_path, "rb") as f:
+                vocab = pickle.load(f)
+            self.vocab = Manager().dict(vocab)
+        else:
+            print("Generating vocabulary for EFGs")
+            with Pool(processes=self.num_workers) as pool:
+                list(
+                    tqdm(
+                        pool.imap(
+                            self.generate_vocab,
+                            smiles,
+                            chunksize=5 * self.num_workers,
+                        ),
+                        total=len(smiles),
+                    )
+                )
+            vocab = dict(self.vocab)
+            cleavage(vocab, alpha=0.7)
+            self.vocab = Manager().dict(vocab)
+            with open(self.vocab_path, "wb") as f:
+                pickle.dump(vocab, f)
+
+        smiles = smiles[:1000]
+
+        print("Creating feature vectors for EFGs")
+        with Pool(processes=self.num_workers) as p:
+            features = list(
+                tqdm(
+                    p.imap(
+                        self._create_embeddings, smiles, chunksize=5 * self.num_workers
+                    ),
+                    total=len(smiles),
+                )
+            )
+
+        # get price from dataframe
+        price = self.get_price()
+        # now remove empty features
+        price, features = zip(
+            *[(price[idx], features[idx]) for idx, i in enumerate(features) if i]
+        )
+        # count the occurence of features
+        features = [Counter(f) for f in features]
+        counts = [torch.Tensor(list(f.values())) for f in features]
+        features = [torch.Tensor(list(f.keys())) for f in features]
+        padded_features = pad_sequence(features, batch_first=True, padding_value=0)
+        padded_counts = pad_sequence(counts, batch_first=True, padding_value=0)
+        # padded_counts and padded_features have same dimension
+        # convert to LongTensor
+        padded_features = padded_features.long()
+        padded_counts = padded_counts.long()
+        price = torch.FloatTensor(price)
+
+        # store info in dictionary for easy access
+        with open(self.feature_path / "features_EFG.pkl", "wb") as f:
+            pickle.dump(
+                {"price": price, "features": padded_features, "counts": padded_counts},
+                f,
+            )
+
+        return price, padded_features, padded_counts
+
+    def generate_vocab(self, smile: str) -> None:
+        try:
+            mol = Chem.MolFromSmiles(smile)  # type: ignore
+            a, b = mol2frag(mol)
+            vocab_update = {}
+            for elem in a + b:
+                vocab_update[elem] = self.vocab.get(elem, 0) + 1
+            self.vocab.update(vocab_update)
+        except:
+            pass
+
+    def _create_embeddings(self, smi: str) -> list[Optional[int]]:
+        try:
+            vocab = list(self.vocab.keys())
+            mol = Chem.MolFromSmiles(smi)  # type: ignore
+            extra = {}
+            a, b = mol2frag(
+                mol,
+                toEnd=True,
+                vocabulary=list(vocab),
+                extra_included=True,
+                extra_backup=extra,
+            )
+            backup_vocab = list(extra.values())
+            atoms = a + b + backup_vocab
+            indeces = []
+            for atom in atoms:
+                if atom in vocab:
+                    idx = vocab.index(atom)
+                    indeces.append(idx + 1)  # add 1 for padding
+                else:
+                    idx = len(vocab)
+                    indeces.append(idx + 1)
+            return indeces
+        except:
+            return []
+
+
+@gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
+class IFGLoader(CustomDataLoader):
+    def __init__(
+        self, data_path, feature_path, batch_size, num_workers, data_split, df_name
+    ) -> None:
+        feature_path = feature_path / "features_IFG"
+        super().__init__(
+            data_path, feature_path, batch_size, num_workers, data_split, df_name
+        )
+        self.vocab = Manager().dict()
+        self.vocab_path = data_path / "vocab" / "vocab_IFG.pkl"
+
+    def load_features(self):
+        # load from pickled features
+        with open(self.feature_path / "features_IFG.pkl", "rb") as f:
+            efg_features = pickle.load(f)
+
+        return efg_features["price"], efg_features["features"], efg_features["counts"]
+
+    def generate_features(self):
+
+        smiles = self.get_smiles()
+        with Pool(self.num_workers) as p:
+            # show progress bar with tqdm
+            print("Generating vocabulary for IFGs")
+            list(
+                tqdm(
+                    p.imap(
+                        self._generate_vocab, smiles, chunksize=2 * self.num_workers
+                    ),
+                    total=len(smiles),
+                )
+            )
+            vocab = dict(self.vocab)
+        with open(self.vocab_path, "wb") as f:
+            pickle.dump(vocab, f)
+
+        print("Creating feature vectors for IFGs")
+        with Pool(self.num_workers) as p:
+            features = list(
+                tqdm(
+                    p.imap(
+                        self._create_embeddings, smiles, chunksize=2 * self.num_workers
+                    ),
+                    total=len(smiles),
+                )
+            )
+
+        # get price from dataframe
+        price = self.get_price()
+        # now remove empty features
+        price, features = zip(
+            *[(price[idx], features[idx]) for idx, i in enumerate(features) if i]
+        )
+        # count the occurence of features
+        features = [Counter(f) for f in features]
+        counts = [torch.Tensor(f.values()) for f in features]
+        features = [torch.Tensor(f.keys()) for f in features]
+        padded_features = pad_sequence(features, batch_first=True, padding_value=0)
+        padded_counts = pad_sequence(counts, batch_first=True, padding_value=0)
+        padded_features = padded_features.long()
+        padded_counts = padded_counts.long()
+        price = torch.FloatTensor(price)
+
+        # store info in dictionary for easy access
+        with open(self.feature_path / "features_IFG.pkl", "wb") as f:
+            pickle.dump(
+                {"price": price, "features": padded_features, "counts": padded_counts},
+                f,
+            )
+
+        return price, padded_features, padded_counts
+
+    def _generate_vocab(self, smi: str) -> None:
+        mol = Chem.MolFromSmiles(smi)  # type: ignore
+        fgs = ifg(mol)
+        for fg in fgs:
+            self.vocab[fg] = self.vocab.get(fg, 0) + 1
+
+    def _create_embeddings(self, smi: str) -> list[int]:
+        """
+        Returns a list of indeces of positions in vocab
+        """
+
+        vocab = list(self.vocab().keys())  # type: ignore
+        mol = Chem.MolFromSmiles(smi)  # type: ignore
+        ifg_list = ifg(mol)
+        atoms = [fg.atoms for fg in ifg_list]
+        indeces = []
+        for atom in atoms:
+            if atom in vocab:
+                idx = vocab.index(atom)
+                indeces.append(idx + 1)
+            else:
+                idx = len(vocab)
+                indeces.append(idx + 1)
+
+        return indeces
+
+
+# The loader for fingerprints of the molecules - most fingerprints share same signature in rdkit
+@gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
+class FPLoader(CustomDataLoader):
+    def __init__(
+        self,
+        data_path,
+        feature_path,
+        batch_size,
+        num_workers,
+        data_split,
+        df_name,
+        fp_type: str,
+        fp_size: int,
+        p_r_size: int,
+        count_simulation: bool,
+    ) -> None:
+        feature_path = feature_path / f"features_FP_{fp_type}"
+        super().__init__(
+            data_path, feature_path, batch_size, num_workers, data_split, df_name
+        )
+        self.fp_type = fp_type
+        self.fp_size = fp_size  # the size of the fingerprint vector
+        self.p_r_size = p_r_size  # the length of the path/radius
+        self.count = count_simulation  # whether to use count fingerprint
+        if fp_type == "morgan":
+            self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+                radius=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
+            )
+        elif fp_type == "rdkit":
+            self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
+                maxPath=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
+            )
+        elif fp_type == "atom":
+            self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
+                maxDistance=self.p_r_size,
+                fpSize=self.fp_size,
+                countSimulation=self.count,
+            )
+        else:
+            raise ValueError("Fingerprint type not supported")
+
+    def load_features(self):
+        # load from pickled features
+        with open(self.feature_path / f"features_FP_{self.fp_type}.pkl", "rb") as f:
+            fp_features = pickle.load(f)
+
+        return fp_features["price"], fp_features["features"], None
+
+    def generate_features(self) -> tuple[FloatTensor, LongTensor, None]:
+        smiles = self.get_smiles()
+        print(f"Creating feature vectors for {self.fp_type} fingerprint")
+        with Pool(self.num_workers) as p:
+            fps = list(
+                tqdm(
+                    p.imap(
+                        self._generate_fingerprints,
+                        smiles,
+                        chunksize=2 * self.num_workers,
+                    ),
+                    total=len(smiles),
+                )
+            )
+        fps = [torch.LongTensor(fp) for fp in fps]
+        price = self.get_price()
+        price = torch.FloatTensor(price)
+        features = torch.LongTensor(fps)
+        with open(self.feature_path / f"features_FP_{self.fp_type}.pkl", "wb") as f:
+            pickle.dump({"price": price, "features": features}, f)
+
+        return price, features, None
+
+    def _generate_fingerprints(self, smi: str) -> np.ndarray:
+        mol = Chem.MolFromSmiles(smi)  # type: ignore
+        fp = self.fp_gen.GetFingerprintAsNumPy(mol)
+        return fp
+
+
+# Data Loader for creating Tokens from SMILES strings
+@gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
+class TFLoader(CustomDataLoader):
+    def __init__(
+        self,
+        data_path,
+        feature_path,
+        batch_size,
+        num_workers,
+        data_split,
+        df_name,
+    ) -> None:
+        feature_path = feature_path / "features_TF"
+        super().__init__(
+            data_path, feature_path, batch_size, num_workers, data_split, df_name
+        )
+
+    def generate_features(self) -> tuple[FloatTensor, LongTensor, None]:
+        print("Creating features for Tokenized SMILES")
+        vocab_path = self.data_path / "vocab" / "vocab_SMILES.txt"
+        with open(vocab_path, "r") as f:
+            vocab = {line.strip(): idx for idx, line in enumerate(f)}
+        smiles = self.get_smiles()
+        tokenizer = Tokenizer(vocab, 700, self.num_workers, len(smiles))
+        tokenized = tokenizer.tokenize(smiles)  # returns list[int] of length nxSMILES
+        encoded = tokenizer.encode(
+            tokenized
+        )  # returns list[list[int]] of length n x max_len x 1
+        encoded = torch.LongTensor(encoded)
+        price = self.get_price()
+        price = torch.FloatTensor(price)
+        with open(self.feature_path / "features_TF.pkl", "wb") as f:
+            pickle.dump({"price": price, "features": encoded}, f)
+
+        return price, encoded, None
+
+    def load_features(self) -> tuple[FloatTensor, LongTensor, None]:
+        with open(self.feature_path / "features_TF.pkl", "rb") as f:
+            tf_features = pickle.load(f)
+
+        return tf_features["price"], tf_features["features"], None
+
+
+if __name__ == "__main__":
+    root_dir = Path(__file__).parent.parent
+    data_path = root_dir / "data"
+    feature_path = data_path / "features"
+    df_name = "chemspace_reduced"
+    batch_size = 32
+    num_workers = 8
+    data_split = [0.8, 0.1, 0.1]
+    efgloader = EFGLoader(
+        data_path, feature_path, batch_size, num_workers, data_split, df_name
+    )
+    efgloader.generate_features()

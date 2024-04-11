@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from rdkit import Chem, RDLogger
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdMolDescriptors # type:ignore
 from tqdm import tqdm
 
 from src.rdkit_ifg import identify_functional_groups as ifg
@@ -59,7 +59,7 @@ def plot_price_distribution(path_mport: Path):
     #ax2.set_xlim((2.5,5.5))
     # Create title for overall figure
     fig.suptitle('Distribution of Pricing Data')
-    fig.savefig(ROOT_DIR.joinpath("figs", "price_dist.png"))
+    fig.savefig(str(ROOT_DIR.joinpath("figs", "price_dist.png")))
     
 
 
@@ -70,10 +70,10 @@ class Preprocessing:
         self.colnames = colnames
         self.data_smiles = data_smiles
         self.reduce_size = reduce_size
-        self.num_workers = os.cpu_count() - 1
+        self.num_workers = os.cpu_count() - 1 # type:ignore
         self.vocab = Manager().dict()
-        self.vocab_path = self.data_path.joinpath("vocab")
         self.data_path = data_path
+        self.vocab_path = self.data_path.joinpath("vocab")
         
         if not self.data_smiles.exists():
             self.extract_pubchem() if "pubchem"==self.data_smiles.stem else self.extract_mport()
@@ -305,11 +305,13 @@ class EFG(Preprocessing):
 
 
 if __name__ == "__main__":
-    #efg = EFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", True)
-    #efg.create_feature_vec()
+    DATA_DIR = Path(__file__).parent.parent / "data"
 
-    ifg = IFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", False)
-    ifg.create_feature_vec()
+    efg = EFG(columns, DATA_DIR, DATA_DIR / "chemspace_reduced.csv", True)
+    efg.create_feature_vec()
+
+    # ifg = IFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", False)
+    # ifg.create_feature_vec()
     
     # Plot price distribution
     #plot_price_distribution(DATA_DIR / "mport.pkl")

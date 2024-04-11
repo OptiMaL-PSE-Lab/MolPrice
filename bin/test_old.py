@@ -9,7 +9,7 @@ from torch.nn.modules.loss import MSELoss
 from sklearn.metrics import r2_score
 
 from src.model import FgLSTM
-from src.data_loader import create_dataloader 
+from src._data_loader import create_dataloader 
 from src.definitions import DATA_DIR, CONFIGS_DIR
 
 
