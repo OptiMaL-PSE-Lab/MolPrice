@@ -240,7 +240,7 @@ class IFG(Preprocessing):
 
     def convert_mol_to_frag(self, smile):
         mol = Chem.MolFromSmiles(smile)
-        fgs = ifg(mol, smile)
+        fgs = ifg(mol)
         for fg in fgs:
             self.vocab[fg.atoms] = self.vocab.get(fg.atoms, 0) + 1
 
@@ -307,11 +307,11 @@ class EFG(Preprocessing):
 if __name__ == "__main__":
     DATA_DIR = Path(__file__).parent.parent / "data"
 
-    efg = EFG(columns, DATA_DIR, DATA_DIR / "chemspace_reduced.csv", True)
-    efg.create_feature_vec()
+    # efg = EFG(columns, DATA_DIR, DATA_DIR / "chemspace_reduced.csv", True)
+    # efg.create_feature_vec()
 
-    # ifg = IFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", False)
-    # ifg.create_feature_vec()
+    ifg = IFG(columns, DATA_DIR, DATA_DIR / "chemspace_reduced.csv", False)
+    ifg.create_feature_vec()
     
     # Plot price distribution
     #plot_price_distribution(DATA_DIR / "mport.pkl")

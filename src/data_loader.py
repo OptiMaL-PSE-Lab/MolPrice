@@ -4,7 +4,7 @@ from collections import Counter
 from multiprocessing import Pool, Manager
 from pathlib import Path
 from tqdm import tqdm
-from typing import Optional, Sequence
+from typing import Optional, Generator
 
 import gin
 import numpy as np
@@ -49,6 +49,7 @@ class CustomDataLoader(LightningDataModule):
         self,
         data_path: Path,
         feature_path: Path,
+        pickle_path: Path,
         batch_size: int,
         num_workers: int,
         data_split: list[float],
@@ -57,6 +58,7 @@ class CustomDataLoader(LightningDataModule):
         super().__init__()
         self.data_path = data_path
         self.feature_path = feature_path
+        self.pickle_path = pickle_path
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.data_split = data_split
@@ -68,14 +70,9 @@ class CustomDataLoader(LightningDataModule):
         self.dataframe: Path = self.data_path / f"{df_name}.csv"
 
     def prepare_data(self):
-
-        if not self.feature_path.exists():
+        if not self.pickle_path.exists():
             self.feature_path.mkdir(parents=True, exist_ok=True)
-            price, features, counts = self.generate_features()
-            # ensure that everything is of the same length and features are non empty
-            price = self.get_price()
-            if len(price) != len(features):
-                raise ValueError("Features and price must be the same length")
+            self.generate_features()
         else:
             pass
 
@@ -115,6 +112,11 @@ class CustomDataLoader(LightningDataModule):
         df = pd.read_csv(self.dataframe)
         return df["smi_can"].tolist()
 
+    def get_batch_smiles(self, batch_size: int) -> Generator[list[str], None, None]:
+        df = pd.read_csv(self.dataframe)
+        for i in tqdm(range(0, len(df), batch_size)):
+            yield df["smi_can"].iloc[i : i + batch_size].tolist()
+
     def get_price(self) -> np.ndarray:
         """
         Returns the log price of the molecules / mmol
@@ -123,7 +125,7 @@ class CustomDataLoader(LightningDataModule):
         return df["price_mmol"].apply(np.log).values  # type: ignore
 
     @abstractmethod
-    def generate_features() -> tuple[FloatTensor, LongTensor, Optional[LongTensor]]:
+    def generate_features() -> None:
         pass
 
     @abstractmethod
@@ -136,19 +138,30 @@ class EFGLoader(CustomDataLoader):
     def __init__(
         self, data_path, feature_path, batch_size, num_workers, data_split, df_name
     ) -> None:
-        feature_path = feature_path / "features_EFG"
+        pickle_path = feature_path / "features_EFG.pkl.npz"
         super().__init__(
-            data_path, feature_path, batch_size, num_workers, data_split, df_name
+            data_path,
+            feature_path,
+            pickle_path,
+            batch_size,
+            num_workers,
+            data_split,
+            df_name,
         )
         self.vocab = Manager().dict()
         self.vocab_path = data_path / "vocab" / "vocab_EFG.pkl"
 
     def load_features(self):
         # load from pickled features
-        with open(self.feature_path / "features_EFG.pkl", "rb") as f:
-            efg_features = pickle.load(f)
+        data = np.load(self.pickle_path, allow_pickle=False)
+        fps = data["features"]
+        price = data["price"]
+        counts = data["counts"]
+        fps = torch.from_numpy(fps).long()
+        price = torch.from_numpy(price).float()
+        counts = torch.from_numpy(counts).long()
 
-        return efg_features["price"], efg_features["features"], efg_features["counts"]
+        return price, fps, counts # type: ignore
 
     def generate_features(self):
         # To create the feature vectors, there are 4 steps necesssary:
@@ -181,8 +194,6 @@ class EFGLoader(CustomDataLoader):
             with open(self.vocab_path, "wb") as f:
                 pickle.dump(vocab, f)
 
-        smiles = smiles[:1000]
-
         print("Creating feature vectors for EFGs")
         with Pool(processes=self.num_workers) as p:
             features = list(
@@ -210,16 +221,16 @@ class EFGLoader(CustomDataLoader):
         # convert to LongTensor
         padded_features = padded_features.long()
         padded_counts = padded_counts.long()
-        price = torch.FloatTensor(price)
+        # convert tensors to numpy for easier saving
+        padded_features, padded_counts = padded_features.numpy(), padded_counts.numpy()
 
         # store info in dictionary for easy access
-        with open(self.feature_path / "features_EFG.pkl", "wb") as f:
-            pickle.dump(
-                {"price": price, "features": padded_features, "counts": padded_counts},
-                f,
-            )
-
-        return price, padded_features, padded_counts
+        np.savez_compressed(
+            self.pickle_path,
+            price=price,
+            features=padded_features,
+            counts=padded_counts,
+        )
 
     def generate_vocab(self, smile: str) -> None:
         try:
@@ -264,44 +275,61 @@ class IFGLoader(CustomDataLoader):
     def __init__(
         self, data_path, feature_path, batch_size, num_workers, data_split, df_name
     ) -> None:
-        feature_path = feature_path / "features_IFG"
+        pickle_path = feature_path / "features_IFG.pkl.npz"
         super().__init__(
-            data_path, feature_path, batch_size, num_workers, data_split, df_name
+            data_path,
+            feature_path,
+            pickle_path,
+            batch_size,
+            num_workers,
+            data_split,
+            df_name,
         )
         self.vocab = Manager().dict()
         self.vocab_path = data_path / "vocab" / "vocab_IFG.pkl"
 
     def load_features(self):
         # load from pickled features
-        with open(self.feature_path / "features_IFG.pkl", "rb") as f:
-            efg_features = pickle.load(f)
+        data = np.load(self.pickle_path, allow_pickle=False)
+        features = data["features"]
+        price = data["price"]
+        counts = data["counts"]
+        features = torch.from_numpy(features).long()
+        price = torch.from_numpy(price).float()
+        counts = torch.from_numpy(counts).long()
 
-        return efg_features["price"], efg_features["features"], efg_features["counts"]
+        return price, features, counts
 
     def generate_features(self):
-
         smiles = self.get_smiles()
-        with Pool(self.num_workers) as p:
-            # show progress bar with tqdm
-            print("Generating vocabulary for IFGs")
-            list(
-                tqdm(
-                    p.imap(
-                        self._generate_vocab, smiles, chunksize=2 * self.num_workers
-                    ),
-                    total=len(smiles),
+
+        if self.vocab_path.exists():
+            print("Loading vocabulary for IFGs")
+            with open(self.vocab_path, "rb") as f:
+                vocab = pickle.load(f)
+            self.vocab = Manager().dict(vocab)
+        else:
+            with Pool(self.num_workers) as p:
+                # show progress bar with tqdm
+                print("Generating vocabulary for IFGs")
+                list(
+                    tqdm(
+                        p.imap(
+                            self._generate_vocab, smiles, chunksize=5 * self.num_workers
+                        ),
+                        total=len(smiles),
+                    )
                 )
-            )
-            vocab = dict(self.vocab)
-        with open(self.vocab_path, "wb") as f:
-            pickle.dump(vocab, f)
+                vocab = dict(self.vocab)
+            with open(self.vocab_path, "wb") as f:
+                pickle.dump(vocab, f)
 
         print("Creating feature vectors for IFGs")
         with Pool(self.num_workers) as p:
             features = list(
                 tqdm(
                     p.imap(
-                        self._create_embeddings, smiles, chunksize=2 * self.num_workers
+                        self._create_embeddings, smiles, chunksize=5 * self.num_workers
                     ),
                     total=len(smiles),
                 )
@@ -315,35 +343,33 @@ class IFGLoader(CustomDataLoader):
         )
         # count the occurence of features
         features = [Counter(f) for f in features]
-        counts = [torch.Tensor(f.values()) for f in features]
-        features = [torch.Tensor(f.keys()) for f in features]
+        counts = [torch.Tensor(list(f.values())) for f in features]
+        features = [torch.Tensor(list(f.keys())) for f in features]
         padded_features = pad_sequence(features, batch_first=True, padding_value=0)
         padded_counts = pad_sequence(counts, batch_first=True, padding_value=0)
         padded_features = padded_features.long()
         padded_counts = padded_counts.long()
-        price = torch.FloatTensor(price)
+        padded_features, padded_counts = padded_features.numpy(), padded_counts.numpy()
 
         # store info in dictionary for easy access
-        with open(self.feature_path / "features_IFG.pkl", "wb") as f:
-            pickle.dump(
-                {"price": price, "features": padded_features, "counts": padded_counts},
-                f,
-            )
-
-        return price, padded_features, padded_counts
+        np.savez_compressed(
+            self.pickle_path,
+            price=price,
+            features=padded_features,
+            counts=padded_counts,
+        )
 
     def _generate_vocab(self, smi: str) -> None:
         mol = Chem.MolFromSmiles(smi)  # type: ignore
         fgs = ifg(mol)
         for fg in fgs:
-            self.vocab[fg] = self.vocab.get(fg, 0) + 1
+            self.vocab[fg.atoms] = self.vocab.get(fg.atoms, 0) + 1
 
     def _create_embeddings(self, smi: str) -> list[int]:
         """
         Returns a list of indeces of positions in vocab
         """
-
-        vocab = list(self.vocab().keys())  # type: ignore
+        vocab = list(self.vocab.keys())  # type: ignore
         mol = Chem.MolFromSmiles(smi)  # type: ignore
         ifg_list = ifg(mol)
         atoms = [fg.atoms for fg in ifg_list]
@@ -375,9 +401,15 @@ class FPLoader(CustomDataLoader):
         p_r_size: int,
         count_simulation: bool,
     ) -> None:
-        feature_path = feature_path / f"features_FP_{fp_type}"
+        pickle_path = feature_path / f"features_FP_{fp_type}.pkl.npz"
         super().__init__(
-            data_path, feature_path, batch_size, num_workers, data_split, df_name
+            data_path,
+            feature_path,
+            pickle_path,
+            batch_size,
+            num_workers,
+            data_split,
+            df_name,
         )
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
@@ -400,40 +432,31 @@ class FPLoader(CustomDataLoader):
         else:
             raise ValueError("Fingerprint type not supported")
 
-    def load_features(self):
+    def load_features(self) -> tuple[FloatTensor, FloatTensor, Optional[LongTensor]]:
         # load from pickled features
-        with open(self.feature_path / f"features_FP_{self.fp_type}.pkl", "rb") as f:
-            fp_features = pickle.load(f)
+        data = np.load(self.pickle_path, allow_pickle=False)
+        fps = data["features"]
+        price = data["price"]
+        fps = torch.from_numpy(fps).float()
+        price = torch.from_numpy(price).float()
 
-        return fp_features["price"], fp_features["features"], None
+        return price, fps, None  # type: ignore
 
-    def generate_features(self) -> tuple[FloatTensor, LongTensor, None]:
-        smiles = self.get_smiles()
+    def generate_features(self):
         print(f"Creating feature vectors for {self.fp_type} fingerprint")
-        with Pool(self.num_workers) as p:
-            fps = list(
-                tqdm(
-                    p.imap(
-                        self._generate_fingerprints,
-                        smiles,
-                        chunksize=2 * self.num_workers,
-                    ),
-                    total=len(smiles),
-                )
-            )
-        fps = [torch.LongTensor(fp) for fp in fps]
+        # * The higher the fp_size, the larger the memory requirements -> use batch processing to only load in part of SMILES at each it
+        fps = []
+        for smi in self.get_batch_smiles(10000):
+            for s in smi:
+                mol = Chem.MolFromSmiles(s)  # type: ignore
+                fp = self.fp_gen.GetFingerprintAsNumPy(mol)
+                fps.append(fp)
+
+        fps = np.array(fps, dtype=np.int8)
         price = self.get_price()
-        price = torch.FloatTensor(price)
-        features = torch.LongTensor(fps)
-        with open(self.feature_path / f"features_FP_{self.fp_type}.pkl", "wb") as f:
-            pickle.dump({"price": price, "features": features}, f)
-
-        return price, features, None
-
-    def _generate_fingerprints(self, smi: str) -> np.ndarray:
-        mol = Chem.MolFromSmiles(smi)  # type: ignore
-        fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-        return fp
+        np.savez_compressed(
+            self.pickle_path, price=price, features=fps, allow_pickle=False
+        )
 
 
 # Data Loader for creating Tokens from SMILES strings
@@ -443,17 +466,24 @@ class TFLoader(CustomDataLoader):
         self,
         data_path,
         feature_path,
+        pickle_path,
         batch_size,
         num_workers,
         data_split,
         df_name,
     ) -> None:
-        feature_path = feature_path / "features_TF"
+        pickle_path = feature_path / "features_TF.pkl.npz"
         super().__init__(
-            data_path, feature_path, batch_size, num_workers, data_split, df_name
+            data_path,
+            feature_path,
+            pickle_path,
+            batch_size,
+            num_workers,
+            data_split,
+            df_name,
         )
 
-    def generate_features(self) -> tuple[FloatTensor, LongTensor, None]:
+    def generate_features(self):
         print("Creating features for Tokenized SMILES")
         vocab_path = self.data_path / "vocab" / "vocab_SMILES.txt"
         with open(vocab_path, "r") as f:
@@ -464,19 +494,18 @@ class TFLoader(CustomDataLoader):
         encoded = tokenizer.encode(
             tokenized
         )  # returns list[list[int]] of length n x max_len x 1
-        encoded = torch.LongTensor(encoded)
+        encoded = np.array(encoded)
         price = self.get_price()
-        price = torch.FloatTensor(price)
-        with open(self.feature_path / "features_TF.pkl", "wb") as f:
-            pickle.dump({"price": price, "features": encoded}, f)
+        np.savez_compressed(self.pickle_path, price=price, features=encoded)
 
-        return price, encoded, None
+    def load_features(self):
+        data = np.load(self.pickle_path, allow_pickle=False)
+        features = data["features"]
+        price = data["price"]
+        features = torch.from_numpy(features).long()
+        price = torch.from_numpy(price).float()
 
-    def load_features(self) -> tuple[FloatTensor, LongTensor, None]:
-        with open(self.feature_path / "features_TF.pkl", "rb") as f:
-            tf_features = pickle.load(f)
-
-        return tf_features["price"], tf_features["features"], None
+        return price, features, None
 
 
 if __name__ == "__main__":
@@ -487,7 +516,13 @@ if __name__ == "__main__":
     batch_size = 32
     num_workers = 8
     data_split = [0.8, 0.1, 0.1]
-    efgloader = EFGLoader(
-        data_path, feature_path, batch_size, num_workers, data_split, df_name
+    efgloader = IFGLoader(
+        data_path,
+        feature_path,
+        batch_size,
+        num_workers,
+        data_split,
+        df_name
     )
+
     efgloader.generate_features()

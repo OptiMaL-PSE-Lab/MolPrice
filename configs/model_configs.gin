@@ -1,11 +1,13 @@
 import gin.torch.external_configurables
 
+include 'configs/dataloader.gin'
+
 # Training Parameters
 main.max_epoch = 200
 main.early_stopping = True
 main.patience = 10
 main.no_gpus = 0
-main.logging = True
+main.logging = False
 
 # Model Hyperparameters
 
@@ -15,8 +17,8 @@ lr = 2e-4
 
 
 # input and count size are max values for the embedding layer
-LSTM.input_size = 1000
-LSTM.count_size = 100
+LSTM.input_size = 7000
+LSTM.count_size = 300
 LSTM.embedding_size = 300
 LSTM.hidden_lstm = 300
 LSTM.hidden1_nn = 100
@@ -27,8 +29,10 @@ LSTM.dropout = 0.1
 LSTM.configure_optimizers.optimizer = %optimizer
 lstm/torch.optim.Adam.lr = %lr
 
-FP.hidden_size_1 = 1000
-FP.hidden_size_2 = 500
+FP.input_size = %fp_size
+FP.hidden_size_1 = 500
+FP.hidden_size_2 = 200
+FP.hidden_size_3 = 20
 FP.configure_optimizers.optimizer = %optimizer
 fp/torch.optim.Adam.lr = %lr
 

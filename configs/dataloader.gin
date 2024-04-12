@@ -1,7 +1,8 @@
 batch_size = 64
-num_workers = 8
+num_workers = 10
 data_split = [0.8, 0.1, 0.1]
 df_name = "chemspace_reduced"
+fp_size = 2048
 
 EFGLoader.batch_size = %batch_size
 EFGLoader.num_workers = %num_workers
@@ -14,7 +15,7 @@ IFGLoader.data_split = %data_split
 IFGLoader.df_name = %df_name
 
 FPLoader.fp_type = 'morgan'
-FPLoader.fp_size = 1024
+FPLoader.fp_size = %fp_size
 FPLoader.p_r_size = 3
 FPLoader.count_simulation = True
 FPLoader.batch_size = %batch_size

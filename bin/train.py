@@ -28,7 +28,7 @@ def main(
         monitor="val_loss",
         mode="min",
         save_top_k=5,
-        dirpath=args.checkpoint_path / "models/temp",
+        dirpath=args.checkpoint_path,
         filename="model-{epoch:02d}-{val_loss:.2f}",
     )
     if early_stopping:
