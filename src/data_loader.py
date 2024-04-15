@@ -466,7 +466,6 @@ class TFLoader(CustomDataLoader):
         self,
         data_path,
         feature_path,
-        pickle_path,
         batch_size,
         num_workers,
         data_split,

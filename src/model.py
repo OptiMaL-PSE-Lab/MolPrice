@@ -13,7 +13,11 @@ from sklearn.metrics import r2_score
 
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.activation")
+
+warnings.filterwarnings(
+    "ignore", category=UserWarning, module="torch.nn.modules.activation"
+)
+
 
 class CustomModule(L.LightningModule):
     def __init__(self) -> None:
@@ -26,6 +30,7 @@ class CustomModule(L.LightningModule):
 
     def r2_score(self, logits: np.ndarray, labels: np.ndarray):
         return r2_score(logits, labels)
+
 
 # class to be used for EFG/IFG model
 @gin.configurable("LSTM")  # type:ignore
@@ -65,7 +70,6 @@ class FgLSTM(CustomModule):
         self.hidden2_nn = hidden2_nn
         self.lstm_size = lstm_size
         self.embedding = nn.Embedding(input_size, embedding_size, padding_idx=0)
-        self.c_embedding = nn.Embedding(count_size, embedding_size, padding_idx=0)
         self.lstm = nn.LSTM(
             input_size=2 * embedding_size,
             hidden_size=hidden_lstm,
@@ -93,8 +97,9 @@ class FgLSTM(CustomModule):
         )  # Need to convert to cpu for pack_padded_sequence
 
         x_emb = self.embedding(x)
-        c_emb = self.c_embedding(c)
-        c_emb = c_emb * c.unsqueeze(2)
+        # multiply x_emb with c to get the count embedding
+        c = c.unsqueeze(2)
+        c_emb = c * x_emb
         x = torch.cat((x_emb, c_emb), dim=2)
 
         x = pack_padded_sequence(x, seq_lengths, batch_first=True)
@@ -124,7 +129,7 @@ class FgLSTM(CustomModule):
         seq_lengths, perm_idx = seq_lengths.sort(0, descending=True)
         return seq_lengths, perm_idx
 
-    @gin.configurable(module="LSTM") # type: ignore
+    @gin.configurable(module="LSTM")  # type: ignore
     def configure_optimizers(
         self, optimizer: torch.optim.Optimizer
     ) -> OptimizerLRScheduler:
@@ -138,7 +143,14 @@ class FgLSTM(CustomModule):
         labels = labels[perm_idx]
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -150,9 +162,9 @@ class FgLSTM(CustomModule):
         r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
         r2_score = torch.tensor(r2_score)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True) # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss, r2_score
-    
+
     def test_step(self, batch, batch_idx):
         inputs, counts, labels = batch["X"], batch["c"], batch["y"]
         output, perm_idx = self.forward(inputs, counts)
@@ -162,14 +174,16 @@ class FgLSTM(CustomModule):
         r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
         r2_score = torch.tensor(r2_score)
         scores_to_log = {"test_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True) # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss, r2_score
 
 
 # Used for Fingerprints
-@gin.configurable('FP') # type:ignore  
+@gin.configurable("FP")  # type:ignore
 class Fingerprints(CustomModule):
-    def __init__(self, input_size, hidden_size_1: int, hidden_size_2: int, hidden_size_3: int):
+    def __init__(
+        self, input_size, hidden_size_1: int, hidden_size_2: int, hidden_size_3: int
+    ):
         super(Fingerprints, self).__init__()
         self.neural_network = nn.Sequential(
             nn.Linear(input_size, hidden_size_1),
@@ -186,7 +200,7 @@ class Fingerprints(CustomModule):
         x = self.neural_network(x)
         return x
 
-    @gin.configurable(module="FP") # type: ignore
+    @gin.configurable(module="FP")  # type: ignore
     def configure_optimizers(
         self, optimizer: torch.optim.Optimizer
     ) -> OptimizerLRScheduler:
@@ -198,7 +212,14 @@ class Fingerprints(CustomModule):
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -209,9 +230,9 @@ class Fingerprints(CustomModule):
         r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
         r2_score = torch.tensor(r2_score)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True) # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss
-    
+
     def test_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
@@ -220,7 +241,7 @@ class Fingerprints(CustomModule):
         r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
         r2_score = torch.tensor(r2_score)
         scores_to_log = {"test_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True) # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss
 
 
@@ -250,7 +271,9 @@ class TransformerEncoder(CustomModule):
 
     def forward(self, x):
         # x has dimensions of (N_batch, N_seq)
-        embedded = self.embedding(x) # embedding has dimensions of (N_batch, N_seq, embedding_size)
+        embedded = self.embedding(
+            x
+        )  # embedding has dimensions of (N_batch, N_seq, embedding_size)
         mask = self.create_mask(x)
         embedded = self.positional_encoding(embedded)
         # Apply transformer layers
@@ -271,12 +294,12 @@ class TransformerEncoder(CustomModule):
         mask = mask.bool()
         return mask
 
-    @gin.configurable(module="Transformer") # type: ignore
+    @gin.configurable(module="Transformer")  # type: ignore
     def configure_optimizers(
-        self, optimizer: torch.optim.Optimizer, decay_rate: float, warmup_epochs:int 
+        self, optimizer: torch.optim.Optimizer, decay_rate: float, warmup_epochs: int
     ) -> OptimizerLRScheduler:
 
-        opt = optimizer(self.parameters()) # type: ignore
+        opt = optimizer(self.parameters())  # type: ignore
 
         # Define the learning rate schedule
         def lr_schedule(epoch):
@@ -286,11 +309,11 @@ class TransformerEncoder(CustomModule):
 
         scheduler = LambdaLR(opt, lr_schedule)
         return {
-            'optimizer': opt,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'epoch',  # The scheduler updates the learning rate after each epoch
-            }
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",  # The scheduler updates the learning rate after each epoch
+            },
         }
 
     def training_step(self, batch, batch_idx):
@@ -300,7 +323,14 @@ class TransformerEncoder(CustomModule):
         labels = labels.view(-1, 1)
         # convert output to floatTensor
         loss = self.mse_loss(output, labels)  # type: ignore
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(
+            "train_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -313,16 +343,16 @@ class TransformerEncoder(CustomModule):
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return loss, r2_score
-    
+
     def test_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels) # type: ignore
+        loss = self.mse_loss(output, labels)  # type: ignore
         r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
         r2_score = torch.tensor(r2_score)
         scores_to_log = {"test_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True) # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss
 
 
@@ -379,5 +409,5 @@ class PositionalEncoding(nn.Module):
         Arguments:
             x: Tensor, shape ``[batch_size, max_length, embedding_dim]``
         """
-        x = x + self.pe[:,:x.size(1)]  # type: ignore
+        x = x + self.pe[:, : x.size(1)]  # type: ignore
         return self.dropout(x)

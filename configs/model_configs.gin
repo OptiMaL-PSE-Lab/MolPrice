@@ -6,7 +6,7 @@ include 'configs/dataloader.gin'
 main.max_epoch = 200
 main.early_stopping = True
 main.patience = 10
-main.no_gpus = 0
+main.no_gpus = 1
 main.logging = False
 
 # Model Hyperparameters
@@ -39,7 +39,7 @@ fp/torch.optim.Adam.lr = %lr
 # again, transformer input size is a max value for the embedding
 Transformer.input_size = 600
 Transformer.embedding_size = 400
-Transformer.num_heads = 5
+Transformer.num_heads = 4
 Transformer.hidden_size = 400
 Transformer.num_layers = 3
 Transformer.dropout = 0.1

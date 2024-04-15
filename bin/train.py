@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, ModelSummary
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch import LightningModule, LightningDataModule
 
 import gin.torch.external_configurables
@@ -24,12 +24,13 @@ def main(
 ):
 
     # initialize callbacks
+    # use args.model in filename 
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
         mode="min",
         save_top_k=5,
-        dirpath=args.checkpoint_path,
-        filename="model-{epoch:02d}-{val_loss:.2f}",
+        dirpath=args.checkpoint_path,  
+        filename=f"{args.model}-" + "{epoch}-{val_loss:.2f}",
     )
     if early_stopping:
         earlystopping_callback = EarlyStopping(
@@ -38,9 +39,7 @@ def main(
     else:
         earlystopping_callback = EarlyStopping(monitor="val_loss", patience=max_epoch)
 
-    model_summary_callback = ModelSummary(max_depth=1)
-
-    callbacks = [checkpoint_callback, earlystopping_callback, model_summary_callback]
+    callbacks = [checkpoint_callback, earlystopping_callback]
 
     # initialize logger
     if logging:
@@ -62,8 +61,6 @@ def main(
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
-            limit_train_batches=0.001,
-            limit_val_batches=0.001,
         )
     else:
         print("Training resumes on CPU.")
@@ -72,8 +69,6 @@ def main(
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
-            limit_train_batches=0.001,
-            limit_val_batches=0.001,
         )
 
     trainer.fit(
@@ -111,7 +106,6 @@ if __name__ == "__main__":
         help="Model to train",
         required=False,
         choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
-        default = "Transformer"
     )
     parser.add_argument(
         "--fingerprint_type",
