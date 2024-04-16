@@ -29,7 +29,7 @@ class CustomModule(L.LightningModule):
         return F.mse_loss(logits, labels)
 
     def r2_score(self, logits: np.ndarray, labels: np.ndarray):
-        return r2_score(logits, labels)
+        return r2_score(y_true=labels, y_pred=logits)
 
 
 # class to be used for EFG/IFG model
@@ -86,6 +86,7 @@ class FgLSTM(CustomModule):
             nn.Linear(hidden1_nn, hidden2_nn),
             nn.ReLU(),
             nn.Linear(hidden2_nn, output_size),
+            nn.ReLU()
         )
 
     def forward(self, x, c):
@@ -193,6 +194,7 @@ class Fingerprints(CustomModule):
             nn.Linear(hidden_size_2, hidden_size_3),
             nn.ReLU(),
             nn.Linear(hidden_size_3, 1),
+            nn.ReLU()
         )
         self.save_hyperparameters()
 
@@ -281,9 +283,9 @@ class TransformerEncoder(CustomModule):
             embedded = layer(embedded, mask)
 
         # Aggregate information across fragments using mean pooling
-        pooled = embedded.mean(dim=1)
-        # Pass through a fully connected layer with activation function
-        output = self.fc(pooled)
+        cls_hidden_state = embedded[:, 0, :]
+        # Use cls token as input to the final linear layer
+        output = self.fc(cls_hidden_state)
         output = F.relu(output)
         return output
 
@@ -362,7 +364,7 @@ class TransformerEncoderLayer(nn.Module):
     ):
         super(TransformerEncoderLayer, self).__init__()
         self.multihead_attention = nn.MultiheadAttention(
-            embed_dim=embedding_size, num_heads=num_heads, batch_first=True
+            embed_dim=embedding_size, num_heads=num_heads, batch_first=True, dropout=dropout
         )
         self.feed_forward = nn.Sequential(
             nn.Linear(embedding_size, hidden_size),

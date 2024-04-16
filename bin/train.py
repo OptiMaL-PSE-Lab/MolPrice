@@ -1,6 +1,7 @@
+import os
 import gin
-import wandb
 import lightning as L
+import datetime
 from datetime import date
 from pathlib import Path
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
@@ -10,6 +11,9 @@ from lightning.pytorch import LightningModule, LightningDataModule
 
 import gin.torch.external_configurables
 
+# For running on cluster - slow connection to wandb
+os.environ["WANDB_INIT_TIMEOUT"] = "1000"
+os.environ["WANDB_HTTP_TIMEOUT"] = "1000"
 
 @gin.configurable
 def main(
@@ -34,20 +38,20 @@ def main(
     )
     if early_stopping:
         earlystopping_callback = EarlyStopping(
-            monitor="val_loss", patience=patience, min_delta=0.01
+            monitor="val_loss", mode="min", verbose=True, patience=patience, 
         )
     else:
-        earlystopping_callback = EarlyStopping(monitor="val_loss", patience=max_epoch)
+        earlystopping_callback = EarlyStopping(monitor="val_loss", mode="min", patience=max_epoch)
 
     callbacks = [checkpoint_callback, earlystopping_callback]
 
     # initialize logger
     if logging:
-        wandb.login()
         today = date.today()
+        hour = datetime.datetime.now().hour
         d = today.strftime("%m/%d/%Y")
         logger = WandbLogger(
-            project="graphfg", name=f"model-{args.model}-{d}", log_model="all", save_dir=args.log_path 
+            project="graphfg", name=f"model-{args.model}-{d}-{hour}", log_model="all", save_dir=args.log_path 
         )
         logger.watch(model)
     else:

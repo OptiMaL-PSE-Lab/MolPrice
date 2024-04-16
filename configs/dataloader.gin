@@ -1,6 +1,6 @@
 batch_size = 64
 num_workers = 10
-data_split = [0.8, 0.1, 0.1]
+data_split = [0.9, 0.05, 0.05]
 df_name = "chemspace_reduced"
 fp_size = 2048
 

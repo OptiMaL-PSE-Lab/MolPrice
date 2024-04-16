@@ -7,13 +7,13 @@ main.max_epoch = 200
 main.early_stopping = True
 main.patience = 10
 main.no_gpus = 1
-main.logging = False
+main.logging = True
 
 # Model Hyperparameters
 
 # Constants 
 optimizer = @torch.optim.Adam
-lr = 2e-4
+lr = 1e-4
 
 
 # input and count size are max values for the embedding layer
@@ -45,6 +45,6 @@ Transformer.num_layers = 3
 Transformer.dropout = 0.1
 Transformer.configure_optimizers.optimizer = @transformer/torch.optim.AdamW
 Transformer.configure_optimizers.decay_rate = 0.98
-Transformer.configure_optimizers.warmup_epochs = 5
+Transformer.configure_optimizers.warmup_epochs = 2
 transformer/torch.optim.AdamW.lr = 2e-5
 

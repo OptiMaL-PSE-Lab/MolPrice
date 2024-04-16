@@ -39,6 +39,7 @@ class Tokenizer:
         regex = re.compile(pattern)
         tokens = [token for token in regex.findall(smi)]
         assert smi == "".join(tokens)
+        tokens.insert(0, "[CLS]")
         return " ".join(tokens)
 
     def _batch_tokenize(self, smiles: list[str]) -> list[str]:
