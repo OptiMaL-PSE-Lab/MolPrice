@@ -36,9 +36,10 @@ def main(
 
     today = date.today()
     hour = datetime.datetime.now().hour
-    d = today.strftime("%m/%d/%Y")
+    d = today.strftime("%m%d%Y")
     checkpoint_path = args.checkpoint_path / f"{args.model}-{args.fp}-{d}-{hour}"
-    os.mkdir(checkpoint_path)
+    if not os.path.exists(checkpoint_path):
+        os.mkdir(checkpoint_path)
 
     # initialize callbacks
     checkpoint_callback = ModelCheckpoint(
@@ -68,7 +69,6 @@ def main(
         logger = WandbLogger(
             project="graphfg",
             name=f"{args.model}-{args.fp}-{d}-{hour}",
-            id = f"{args.model}-{args.fp}-{d}-{hour}",
             log_model="all",
             save_dir=args.log_path,
         )
@@ -98,8 +98,8 @@ def main(
             log_every_n_steps=500,
         )
 
-    tuner = Tuner(trainer)
-    tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
+    # tuner = Tuner(trainer)
+    # tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
 
     trainer.fit(
         model,
