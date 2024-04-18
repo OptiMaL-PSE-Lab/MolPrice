@@ -5,59 +5,78 @@ import datetime
 from datetime import date
 from pathlib import Path
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
-from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
-from lightning.pytorch import LightningModule, LightningDataModule
+from lightning.pytorch.loggers import WandbLogger, CSVLogger
+from lightning.pytorch.callbacks import (
+    EarlyStopping,
+    ModelCheckpoint,
+)
+from lightning.pytorch import LightningModule
+from lightning.pytorch.tuner import Tuner  # type: ignore
 
+from src.data_loader import CustomDataLoader
 import gin.torch.external_configurables
 
 # For running on cluster - slow connection to wandb
 os.environ["WANDB_INIT_TIMEOUT"] = "1000"
 os.environ["WANDB_HTTP_TIMEOUT"] = "1000"
 
+
 @gin.configurable
 def main(
     args,
     model: LightningModule,
-    data_module: LightningDataModule,
+    data_module: CustomDataLoader,
     max_epoch: int,
     early_stopping: bool,
     patience: int,
     no_gpus: int,
     logging: bool,
+    gradient_accum: int,
 ):
 
+    today = date.today()
+    hour = datetime.datetime.now().hour
+    d = today.strftime("%m/%d/%Y")
+    checkpoint_path = args.checkpoint_path / f"{args.model}-{args.fp}-{d}-{hour}"
+    os.mkdir(checkpoint_path)
+
     # initialize callbacks
-    # use args.model in filename 
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
         mode="min",
-        save_top_k=5,
-        dirpath=args.checkpoint_path,  
-        filename=f"{args.model}-" + "{epoch}-{val_loss:.2f}",
+        save_top_k=2,
+        dirpath=checkpoint_path,
+        filename="{epoch}-{val_loss:.3f}",
     )
+
     if early_stopping:
         earlystopping_callback = EarlyStopping(
-            monitor="val_loss", mode="min", verbose=True, patience=patience, 
+            monitor="val_loss",
+            mode="min",
+            verbose=True,
+            patience=patience,
         )
     else:
-        earlystopping_callback = EarlyStopping(monitor="val_loss", mode="min", patience=max_epoch)
+        earlystopping_callback = EarlyStopping(
+            monitor="val_loss", mode="min", patience=max_epoch
+        )
 
     callbacks = [checkpoint_callback, earlystopping_callback]
 
     # initialize logger
     if logging:
-        today = date.today()
-        hour = datetime.datetime.now().hour
-        d = today.strftime("%m/%d/%Y")
         logger = WandbLogger(
-            project="graphfg", name=f"model-{args.model}-{d}-{hour}", log_model="all", save_dir=args.log_path 
+            project="graphfg",
+            name=f"{args.model}-{args.fp}-{d}-{hour}",
+            id = f"{args.model}-{args.fp}-{d}-{hour}",
+            log_model="all",
+            save_dir=args.log_path,
         )
         logger.watch(model)
     else:
-        logger = True
+        logger = CSVLogger(save_dir=args.log_path)
 
-    if no_gpus>0:
+    if no_gpus > 0:
         devices = find_usable_cuda_devices()
         trainer = L.Trainer(
             accelerator="cuda",
@@ -65,6 +84,8 @@ def main(
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
+            gradient_clip_val=0.5,
+            log_every_n_steps=500,
         )
     else:
         print("Training resumes on CPU.")
@@ -73,12 +94,26 @@ def main(
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
+            gradient_clip_val=0.5,
+            log_every_n_steps=500,
         )
+
+    tuner = Tuner(trainer)
+    tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
 
     trainer.fit(
         model,
         datamodule=data_module,
     )
+
+    # within the checkpoint path, put info about the loggers files and the gin config 
+    config_info = gin.operative_config_str()
+    loggers_id = logger._id if logging else logger.version # type: ignore
+    # write to new file the config_info and loggers_id 
+    with open(checkpoint_path / "config_info.txt", "w") as f:
+        f.write(f"Loggers ID: {loggers_id}")
+        f.write("\n")
+        f.write(config_info)
 
 
 if __name__ == "__main__":
@@ -95,7 +130,7 @@ if __name__ == "__main__":
     gin_path_dataloader = str(path / "configs" / "dataloader.gin")
     data_path = path / "data"
     feature_path = data_path / "features"
-    checkpoint_path = path / "models" / "temp"
+    checkpoint_path = path / "models"
     loader_dict = {
         "LSTM_EFG": EFGLoader,
         "LSTM_IFG": IFGLoader,
@@ -119,19 +154,17 @@ if __name__ == "__main__":
         help="Type of fingerprint to use",
         required=False,
         choices=["morgan", "rdkit", "atom"],
-        default = "morgan"
+        default="morgan",
     )
 
     args = parser.parse_args()
     args.checkpoint_path = checkpoint_path
     args.log_path = path / "logs"
     gin.parse_config_file(gin_path_dataloader)
-    gin.bind_parameter('FPLoader.fp_type', args.fp)  
+    gin.bind_parameter("FPLoader.fp_type", args.fp)
 
     data_object = loader_dict[args.model]
-    data_module = data_object(
-        data_path=data_path, feature_path=feature_path
-    )  
+    data_module = data_object(data_path=data_path, feature_path=feature_path)
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(gin_path_model)

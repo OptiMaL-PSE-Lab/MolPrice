@@ -415,22 +415,6 @@ class FPLoader(CustomDataLoader):
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
         self.count = count_simulation  # whether to use count fingerprint
-        if fp_type == "morgan":
-            self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
-                radius=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
-            )
-        elif fp_type == "rdkit":
-            self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
-                maxPath=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
-            )
-        elif fp_type == "atom":
-            self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
-                maxDistance=self.p_r_size,
-                fpSize=self.fp_size,
-                countSimulation=self.count,
-            )
-        else:
-            raise ValueError("Fingerprint type not supported")
 
     def load_features(self) -> tuple[FloatTensor, FloatTensor, Optional[LongTensor]]:
         # load from pickled features
@@ -445,6 +429,22 @@ class FPLoader(CustomDataLoader):
     def generate_features(self):
         print(f"Creating feature vectors for {self.fp_type} fingerprint")
         # * The higher the fp_size, the larger the memory requirements -> use batch processing to only load in part of SMILES at each it
+        if self.fp_type == "morgan":
+            self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+                radius=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
+            )
+        elif self.fp_type == "rdkit":
+            self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
+                maxPath=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
+            )
+        elif self.fp_type == "atom":
+            self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
+                maxDistance=self.p_r_size,
+                fpSize=self.fp_size,
+                countSimulation=self.count,
+            )
+        else:
+            raise ValueError("Fingerprint type not supported")
         fps = []
         for smi in self.get_batch_smiles(10000):
             for s in smi:

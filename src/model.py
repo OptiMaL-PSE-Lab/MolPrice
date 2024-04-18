@@ -282,7 +282,6 @@ class TransformerEncoder(CustomModule):
         for layer in self.transformer_layers:
             embedded = layer(embedded, mask)
 
-        # Aggregate information across fragments using mean pooling
         cls_hidden_state = embedded[:, 0, :]
         # Use cls token as input to the final linear layer
         output = self.fc(cls_hidden_state)
