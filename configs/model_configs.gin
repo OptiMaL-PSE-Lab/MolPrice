@@ -5,9 +5,9 @@ include 'configs/dataloader.gin'
 # Training Parameters
 main.max_epoch = 100
 main.early_stopping = True
-main.patience = 1
+main.patience = 10
 main.no_gpus = 1
-main.logging = False
+main.logging = True
 main.gradient_accum = 2
 
 # Model Hyperparameters
@@ -34,8 +34,8 @@ lstm/torch.optim.Adam.weight_decay = %weight_decay
 
 FP.input_size = %fp_size
 FP.hidden_size_1 = 500
-FP.hidden_size_2 = 200
-FP.hidden_size_3 = 20
+FP.hidden_size_2 = 350
+FP.hidden_size_3 = 200
 FP.configure_optimizers.optimizer = %optimizer
 fp/torch.optim.Adam.lr = %lr
 

@@ -98,6 +98,7 @@ def main(
             log_every_n_steps=500,
         )
 
+    #! Whether to use tuner for max batch size or not
     # tuner = Tuner(trainer)
     # tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
 
@@ -108,7 +109,7 @@ def main(
 
     # within the checkpoint path, put info about the loggers files and the gin config 
     config_info = gin.operative_config_str()
-    loggers_id = logger._id if logging else logger.version # type: ignore
+    loggers_id = logger.version if logging else "version_" + logger.version # type: ignore
     # write to new file the config_info and loggers_id 
     with open(checkpoint_path / "config_info.txt", "w") as f:
         f.write(f"Loggers ID: {loggers_id}")

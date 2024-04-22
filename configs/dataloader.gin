@@ -1,7 +1,7 @@
 # Default batch size that can be overwritten based on Tuner
-batch_size = 64
-num_workers = 10
-data_split = [0.8, 0.1, 0.1]
+batch_size = 128
+num_workers = 0
+data_split = [0.98, 0.01, 0.01]
 df_name = "chemspace_reduced"
 fp_size = 2048
 

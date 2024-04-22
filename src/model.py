@@ -217,7 +217,7 @@ class Fingerprints(CustomModule):
         self.log(
             "train_loss",
             loss,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
