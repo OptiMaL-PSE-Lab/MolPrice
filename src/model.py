@@ -183,16 +183,19 @@ class FgLSTM(CustomModule):
 @gin.configurable("FP")  # type:ignore
 class Fingerprints(CustomModule):
     def __init__(
-        self, input_size, hidden_size_1: int, hidden_size_2: int, hidden_size_3: int
+        self, input_size, hidden_size_1: int, hidden_size_2: int, hidden_size_3: int, dropout: float
     ):
         super(Fingerprints, self).__init__()
         self.neural_network = nn.Sequential(
             nn.Linear(input_size, hidden_size_1),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_size_1, hidden_size_2),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_size_2, hidden_size_3),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_size_3, 1),
             nn.ReLU()
         )
