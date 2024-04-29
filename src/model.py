@@ -2,14 +2,13 @@ import gin
 import math
 import lightning as L
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torch.optim.lr_scheduler import LambdaLR
-from sklearn.metrics import r2_score
+from torchmetrics import R2Score
+from torchmetrics.regression import MeanSquaredError
 
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
@@ -24,12 +23,16 @@ class CustomModule(L.LightningModule):
         super().__init__()
 
     def mse_loss(
-        self, logits: torch.FloatTensor, labels: torch.FloatTensor
+        self, logits: torch.Tensor, labels: torch.Tensor
     ) -> torch.Tensor:
-        return F.mse_loss(logits, labels)
+        metric = MeanSquaredError()
+        metric = metric.to(device=logits.device)
+        return metric(logits, labels)
 
-    def r2_score(self, logits: np.ndarray, labels: np.ndarray):
-        return r2_score(y_true=labels, y_pred=logits)
+    def r2_score(self, logits: torch.Tensor, labels: torch.Tensor):
+        metric = R2Score()
+        metric = metric.to(device=logits.device)
+        return metric(target=labels, preds=logits)
 
 
 # class to be used for EFG/IFG model
@@ -160,8 +163,7 @@ class FgLSTM(CustomModule):
         labels = labels[perm_idx]
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
+        r2_score = self.r2_score(output, labels)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss, r2_score
@@ -232,8 +234,7 @@ class Fingerprints(CustomModule):
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
+        r2_score = self.r2_score(output, labels)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss
@@ -255,14 +256,15 @@ class Fingerprints(CustomModule):
 class TransformerEncoder(CustomModule):
     def __init__(
         self,
-        input_size,
-        embedding_size,
-        num_heads,
-        hidden_size,
-        num_layers,
-        dropout,
+        input_size:int,
+        embedding_size:int,
+        num_heads:int,
+        hidden_size:int,
+        num_layers:int,
+        dropout:float,
     ):
         super(TransformerEncoder, self).__init__()
+        self.model_dim = embedding_size
         self.embedding = nn.Embedding(input_size, embedding_size, padding_idx=0)
         self.positional_encoding = PositionalEncoding(embedding_size, dropout)
         self.transformer_layers = nn.ModuleList(
@@ -274,19 +276,22 @@ class TransformerEncoder(CustomModule):
         self.fc = nn.Linear(embedding_size, 1)
         self.save_hyperparameters(ignore="input_size")
 
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
+        max_len = self.find_max_input_length(x)
+        x = x[:, :max_len]
         # x has dimensions of (N_batch, N_seq)
         embedded = self.embedding(
             x
         )  # embedding has dimensions of (N_batch, N_seq, embedding_size)
+        # scale the embedding by sqrt of embedding size
+        embedded = embedded * math.sqrt(self.model_dim)
         mask = self.create_mask(x)
         embedded = self.positional_encoding(embedded)
         # Apply transformer layers
         for layer in self.transformer_layers:
             embedded = layer(embedded, mask)
 
-        cls_hidden_state = embedded[:, 0, :]
-        # Use cls token as input to the final linear layer
+        cls_hidden_state = embedded.max(dim=1)[0]  # (N_batch, embedding_size)
         output = self.fc(cls_hidden_state)
         output = F.relu(output)
         return output
@@ -297,26 +302,26 @@ class TransformerEncoder(CustomModule):
         # convert mask tensor to boolean list not of type Tensor, but type bool
         mask = mask.bool()
         return mask
+    
+    def find_max_input_length(self, x):
+        # x has dimensions of (N_batch, N_seq)
+        no_non_zero = torch.sum(x != 0, dim=1)
+        max_len = torch.max(no_non_zero)
+        return max_len
 
     @gin.configurable(module="Transformer")  # type: ignore
     def configure_optimizers(
-        self, optimizer: torch.optim.Optimizer, decay_rate: float, warmup_epochs: int
+        self, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler
     ) -> OptimizerLRScheduler:
 
         opt = optimizer(self.parameters())  # type: ignore
-
-        # Define the learning rate schedule
-        def lr_schedule(epoch):
-            if epoch < warmup_epochs:
-                return float(epoch) / float(max(1, warmup_epochs))
-            return decay_rate ** (epoch - warmup_epochs)
-
-        scheduler = LambdaLR(opt, lr_schedule)
+        scheduler = scheduler(opt, max_lr=gin.REQUIRED, total_steps=gin.REQUIRED) # type: ignore
+    
         return {
             "optimizer": opt,
             "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "epoch",  # The scheduler updates the learning rate after each epoch
+                "scheduler": scheduler, # scheduler is OneCycleLR from gin file
+                "interval": "step",  # The scheduler updates the learning rate after each epoch
             },
         }
 
@@ -330,7 +335,7 @@ class TransformerEncoder(CustomModule):
         self.log(
             "train_loss",
             loss,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
             prog_bar=True,
             sync_dist=True,
@@ -341,9 +346,8 @@ class TransformerEncoder(CustomModule):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)  # type: ignore
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
+        loss = self.mse_loss(output, labels)  
+        r2_score = self.r2_score(output, labels)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return loss, r2_score
@@ -381,7 +385,7 @@ class TransformerEncoderLayer(nn.Module):
         attended, _ = self.multihead_attention(
             x, x, x, key_padding_mask=~mask
         )  # Invert the mask
-        x = x + self.dropout(attended)
+        x = x + attended
         x = self.layer_norm1(x)
 
         feed_forward_output = self.feed_forward(x)
@@ -406,12 +410,12 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         # pe should have (1, max_len, d_model) shape as batch_first is True
         pe = pe.transpose(0, 1)
-        self.register_buffer("pe", pe)
+        self.register_parameter('pe', nn.Parameter(pe, requires_grad=False))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Arguments:
             x: Tensor, shape ``[batch_size, max_length, embedding_dim]``
         """
-        x = x + self.pe[:, : x.size(1)]  # type: ignore
+        x = x + self.pe[:, :x.size(1)]  # type: ignore
         return self.dropout(x)

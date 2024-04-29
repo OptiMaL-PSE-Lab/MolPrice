@@ -5,16 +5,16 @@ include 'configs/dataloader.gin'
 # Training Parameters
 main.max_epoch = 100
 main.early_stopping = True
-main.patience = 10
+main.patience = 20
 main.no_gpus = 1
 main.logging = True
-main.gradient_accum = 2
+main.gradient_accum = 1
 
 # Model Hyperparameters
 
 # Constants 
 optimizer = @torch.optim.Adam
-lr = 5e-5
+lr = 1e-4
 weight_decay=1e-5
 
 
@@ -40,15 +40,18 @@ FP.configure_optimizers.optimizer = %optimizer
 fp/torch.optim.Adam.lr = %lr
 
 # again, transformer input size is a max value for the embedding
+lr_tf = 5e-5
 Transformer.input_size = 600
-Transformer.embedding_size = 400
-Transformer.num_heads = 2
-Transformer.hidden_size = 400
-Transformer.num_layers = 2
+Transformer.embedding_size = 320
+Transformer.num_heads = 8
+Transformer.hidden_size = 600
+Transformer.num_layers = 3
 Transformer.dropout = 0.1
 Transformer.configure_optimizers.optimizer = @transformer/torch.optim.AdamW
-Transformer.configure_optimizers.decay_rate = 0.98
-Transformer.configure_optimizers.warmup_epochs = 2
-transformer/torch.optim.AdamW.lr = 2e-5
-transformer/torch.optim.AdamW.weight_decay = 1e-5
-
+transformer/torch.optim.AdamW.lr = %lr_tf
+transformer/torch.optim.AdamW.weight_decay = 1e-10
+Transformer.configure_optimizers.scheduler = @transformer/torch.optim.lr_scheduler.OneCycleLR
+transformer/torch.optim.lr_scheduler.OneCycleLR.max_lr = %lr_tf
+transformer/torch.optim.lr_scheduler.OneCycleLR.pct_start = 0.25
+# initial guess to be overwritten
+transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps = 1e6 

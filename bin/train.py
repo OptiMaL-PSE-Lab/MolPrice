@@ -9,6 +9,7 @@ from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from lightning.pytorch.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
+    LearningRateMonitor,
 )
 from lightning.pytorch import LightningModule
 from lightning.pytorch.tuner import Tuner  # type: ignore
@@ -50,6 +51,8 @@ def main(
         filename="{epoch}-{val_loss:.3f}",
     )
 
+    lr_callback = LearningRateMonitor(logging_interval="step")
+
     if early_stopping:
         earlystopping_callback = EarlyStopping(
             monitor="val_loss",
@@ -62,7 +65,7 @@ def main(
             monitor="val_loss", mode="min", patience=max_epoch
         )
 
-    callbacks = [checkpoint_callback, earlystopping_callback]
+    callbacks = [checkpoint_callback, lr_callback, earlystopping_callback]
 
     # initialize logger
     if logging:
@@ -77,15 +80,15 @@ def main(
         logger = CSVLogger(save_dir=args.log_path)
 
     if no_gpus > 0:
-        devices = find_usable_cuda_devices()
+        devices = [i for i in range(no_gpus)]
         trainer = L.Trainer(
             accelerator="cuda",
             devices=devices,
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
-            gradient_clip_val=0.5,
-            log_every_n_steps=500,
+            gradient_clip_val=1.0,
+            log_every_n_steps=200,
         )
     else:
         print("Training resumes on CPU.")
@@ -94,11 +97,10 @@ def main(
             max_epochs=max_epoch,
             logger=logger,
             callbacks=callbacks,
-            gradient_clip_val=0.5,
+            gradient_clip_val=1.0,
             log_every_n_steps=500,
         )
 
-    #! Whether to use tuner for max batch size or not
     # tuner = Tuner(trainer)
     # tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
 
@@ -107,10 +109,10 @@ def main(
         datamodule=data_module,
     )
 
-    # within the checkpoint path, put info about the loggers files and the gin config 
+    # within the checkpoint path, put info about the loggers files and the gin config
     config_info = gin.operative_config_str()
-    loggers_id = logger.version if logging else "version_" + logger.version # type: ignore
-    # write to new file the config_info and loggers_id 
+    loggers_id = logger.version if logging else "version_" + logger.version  # type: ignore
+    # write to new file the config_info and loggers_id
     with open(checkpoint_path / "config_info.txt", "w") as f:
         f.write(f"Loggers ID: {loggers_id}")
         f.write("\n")
@@ -123,6 +125,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
+    from src.model_utils import calculate_max_training_step
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
 
     # Set up all paths
@@ -169,6 +172,9 @@ if __name__ == "__main__":
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(gin_path_model)
+    calculate_max_training_step(
+        data_path
+    )  #! Specific to the scheduler used (i.e. OneCycleLR)
     gin.finalize()
     model_name = args.model.split("_")[0]
     model_dict = {

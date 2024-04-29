@@ -1,7 +1,11 @@
+import gin
+import math
 import re
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from multiprocessing import Pool
 from lightning.pytorch.callbacks import Callback
@@ -73,19 +77,29 @@ class Tokenizer:
         return encoded
 
 
+def calculate_max_training_step(path_data) -> None:
+    batch_size, acc_batches, epochs = gin_qp("%batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
+    dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
+    df = pd.read_csv(path_data / f"{dataframe_name}.csv")
+    len_train = df.shape[0] * splits[0]
+    batches_per_gpu = math.ceil(len_train / float(batch_size))
+    train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
+    gin.bind_parameter("transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps) 
+
 class LogFigureCallback(Callback):
     #! code this up to log the r2 figure to wandb
     def plot_pred_vs_true(self, logits: np.ndarray, labels: np.ndarray, r2score: float):
-        fig, ax = plt.subplots(figsize=(8,6))
+        fig, ax = plt.subplots(figsize=(8, 6))
         ax.hexbin(labels, logits, gridsize=100, cmap="viridis", bins="log")
         plt.colorbar()
         ax.set_xlabel("True values")
         ax.set_ylabel("Predicted values")
         ax.set_title("Predicted vs True values")
         min_val, max_val = np.min([labels, logits]), np.max([labels, logits])
-        ax.plot([min_val, max_val], [min_val, max_val],color='black')
+        ax.plot([min_val, max_val], [min_val, max_val], color="black")
         ax.legend(["R2 score: {:.3f}".format(r2score)])
         return fig
+
 
 if __name__ == "__main__":
     import os
