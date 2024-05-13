@@ -22,9 +22,7 @@ class CustomModule(L.LightningModule):
     def __init__(self) -> None:
         super().__init__()
 
-    def mse_loss(
-        self, logits: torch.Tensor, labels: torch.Tensor
-    ) -> torch.Tensor:
+    def mse_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         metric = MeanSquaredError()
         metric = metric.to(device=logits.device)
         return metric(logits, labels)
@@ -89,7 +87,7 @@ class FgLSTM(CustomModule):
             nn.Linear(hidden1_nn, hidden2_nn),
             nn.ReLU(),
             nn.Linear(hidden2_nn, output_size),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
     def forward(self, x, c):
@@ -185,7 +183,12 @@ class FgLSTM(CustomModule):
 @gin.configurable("FP")  # type:ignore
 class Fingerprints(CustomModule):
     def __init__(
-        self, input_size, hidden_size_1: int, hidden_size_2: int, hidden_size_3: int, dropout: float
+        self,
+        input_size,
+        hidden_size_1: int,
+        hidden_size_2: int,
+        hidden_size_3: int,
+        dropout: float,
     ):
         super(Fingerprints, self).__init__()
         self.neural_network = nn.Sequential(
@@ -199,7 +202,7 @@ class Fingerprints(CustomModule):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size_3, 1),
-            nn.ReLU()
+            nn.ReLU(),
         )
         self.save_hyperparameters()
 
@@ -256,12 +259,12 @@ class Fingerprints(CustomModule):
 class TransformerEncoder(CustomModule):
     def __init__(
         self,
-        input_size:int,
-        embedding_size:int,
-        num_heads:int,
-        hidden_size:int,
-        num_layers:int,
-        dropout:float,
+        input_size: int,
+        embedding_size: int,
+        num_heads: int,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
     ):
         super(TransformerEncoder, self).__init__()
         self.model_dim = embedding_size
@@ -303,7 +306,7 @@ class TransformerEncoder(CustomModule):
         # convert mask tensor to boolean list not of type Tensor, but type bool
         mask = mask.bool()
         return mask
-    
+
     # def find_max_input_length(self, x):
     #     # x has dimensions of (N_batch, N_seq)
     #     no_non_zero = torch.sum(x != 0, dim=1)
@@ -312,16 +315,18 @@ class TransformerEncoder(CustomModule):
 
     @gin.configurable(module="Transformer")  # type: ignore
     def configure_optimizers(
-        self, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler
+        self,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
     ) -> OptimizerLRScheduler:
 
         opt = optimizer(self.parameters())  # type: ignore
-        scheduler = scheduler(opt, max_lr=gin.REQUIRED, total_steps=gin.REQUIRED) # type: ignore
-    
+        scheduler = scheduler(opt, max_lr=gin.REQUIRED, total_steps=gin.REQUIRED)  # type: ignore
+
         return {
             "optimizer": opt,
             "lr_scheduler": {
-                "scheduler": scheduler, # scheduler is OneCycleLR from gin file
+                "scheduler": scheduler,  # scheduler is OneCycleLR from gin file
                 "interval": "step",  # The scheduler updates the learning rate after each epoch
             },
         }
@@ -347,7 +352,7 @@ class TransformerEncoder(CustomModule):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)  
+        loss = self.mse_loss(output, labels)
         r2_score = self.r2_score(output, labels)
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
@@ -371,7 +376,10 @@ class TransformerEncoderLayer(nn.Module):
     ):
         super(TransformerEncoderLayer, self).__init__()
         self.multihead_attention = nn.MultiheadAttention(
-            embed_dim=embedding_size, num_heads=num_heads, batch_first=True, dropout=dropout
+            embed_dim=embedding_size,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=dropout,
         )
         self.feed_forward = nn.Sequential(
             nn.Linear(embedding_size, hidden_size),
@@ -411,12 +419,12 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         # pe should have (1, max_len, d_model) shape as batch_first is True
         pe = pe.transpose(0, 1)
-        self.register_parameter('pe', nn.Parameter(pe, requires_grad=False))
+        self.register_parameter("pe", nn.Parameter(pe, requires_grad=False))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Arguments:
             x: Tensor, shape ``[batch_size, max_length, embedding_dim]``
         """
-        x = x + self.pe[:, :x.size(1)]  # type: ignore
+        x = x + self.pe[:, : x.size(1)]  # type: ignore
         return self.dropout(x)

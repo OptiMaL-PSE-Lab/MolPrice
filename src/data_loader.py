@@ -23,11 +23,15 @@ from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
 from src.model_utils import Tokenizer
 
+
 class FGDataset(Dataset):
     def __init__(
-        self, price: FloatTensor, features: LongTensor | csr_matrix, counts: Optional[LongTensor]
+        self,
+        price: FloatTensor,
+        features: LongTensor | csr_matrix,
+        counts: Optional[LongTensor],
     ):
-        #* Features/counts are stored as sparse matrix | list[LongTensor]
+        # * Features/counts are stored as sparse matrix | list[LongTensor]
 
         self.price = price
         self.features = features
@@ -82,7 +86,7 @@ class CustomDataLoader(LightningDataModule):
             pass
 
     def setup(self, stage: str) -> None:
-        self.mydataset = FGDataset(*self.load_features()) 
+        self.mydataset = FGDataset(*self.load_features())
         self.train_data, self.val_data, self.test_data = random_split(
             self.mydataset, self.data_split, generator=torch.Generator().manual_seed(42)
         )
@@ -94,7 +98,7 @@ class CustomDataLoader(LightningDataModule):
             num_workers=self.workers_loader,
             persistent_workers=False,
             shuffle=True,
-            collate_fn=self.collate_fn
+            collate_fn=self.collate_fn,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -103,7 +107,7 @@ class CustomDataLoader(LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.workers_loader,
             persistent_workers=False,
-            collate_fn=self.collate_fn
+            collate_fn=self.collate_fn,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -112,7 +116,7 @@ class CustomDataLoader(LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.workers_loader,
             persistent_workers=False,
-            collate_fn=self.collate_fn
+            collate_fn=self.collate_fn,
         )
 
     # * holding df in memory is slowing down pool -> use getter instead
@@ -131,13 +135,15 @@ class CustomDataLoader(LightningDataModule):
         """
         df = pd.read_csv(self.dataframe)
         return df["price_mmol"].apply(np.log).values  # type: ignore
-    
+
     @abstractmethod
     def generate_features() -> None:
         pass
 
     @abstractmethod
-    def load_features() -> tuple[FloatTensor, LongTensor | csr_matrix, Optional[LongTensor]]:
+    def load_features() -> (
+        tuple[FloatTensor, LongTensor | csr_matrix, Optional[LongTensor]]
+    ):
         pass
 
 
@@ -169,7 +175,7 @@ class EFGLoader(CustomDataLoader):
         price = torch.from_numpy(price).float()
         counts = torch.from_numpy(counts).long()
 
-        return price, fps, counts # type: ignore
+        return price, fps, counts  # type: ignore
 
     def generate_features(self):
         # To create the feature vectors, there are 4 steps necesssary:
@@ -207,9 +213,7 @@ class EFGLoader(CustomDataLoader):
         with Pool(processes=workers) as p:
             features = list(
                 tqdm(
-                    p.imap(
-                        self._create_embeddings, smiles, chunksize=5 * workers
-                    ),
+                    p.imap(self._create_embeddings, smiles, chunksize=5 * workers),
                     total=len(smiles),
                 )
             )
@@ -324,9 +328,7 @@ class IFGLoader(CustomDataLoader):
                 print("Generating vocabulary for IFGs")
                 list(
                     tqdm(
-                        p.imap(
-                            self._generate_vocab, smiles, chunksize=5 * workers
-                        ),
+                        p.imap(self._generate_vocab, smiles, chunksize=5 * workers),
                         total=len(smiles),
                     )
                 )
@@ -338,9 +340,7 @@ class IFGLoader(CustomDataLoader):
         with Pool(workers) as p:
             features = list(
                 tqdm(
-                    p.imap(
-                        self._create_embeddings, smiles, chunksize=5 * workers
-                    ),
+                    p.imap(self._create_embeddings, smiles, chunksize=5 * workers),
                     total=len(smiles),
                 )
             )
@@ -420,6 +420,7 @@ class FPLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
+            self.collate_fn,
         )
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
@@ -456,7 +457,7 @@ class FPLoader(CustomDataLoader):
             )
         else:
             raise ValueError("Fingerprint type not supported")
-        
+
         fps = []
         for smi in self.get_batch_smiles(10000):
             for s in smi:
@@ -470,9 +471,11 @@ class FPLoader(CustomDataLoader):
             self.pickle_path, price=price, features=fps, allow_pickle=True
         )
 
-    #* Overwrite due to sparse matrix manipulation needed to load in FPs
+    # * Overwrite due to sparse matrix manipulation needed to load in FPs
     def train_dataloader(self) -> DataLoader:
-        sampler = BatchSampler(RandomSampler(self.train_data), batch_size=self.batch_size, drop_last=False)
+        sampler = BatchSampler(
+            RandomSampler(self.train_data), batch_size=self.batch_size, drop_last=False
+        )
         return DataLoader(
             self.train_data,
             batch_size=1,
@@ -483,7 +486,9 @@ class FPLoader(CustomDataLoader):
         )
 
     def val_dataloader(self) -> DataLoader:
-        sampler = BatchSampler(RandomSampler(self.val_data), batch_size=self.batch_size, drop_last=False)
+        sampler = BatchSampler(
+            RandomSampler(self.val_data), batch_size=self.batch_size, drop_last=False
+        )
         return DataLoader(
             self.val_data,
             batch_size=1,
@@ -494,32 +499,39 @@ class FPLoader(CustomDataLoader):
         )
 
     def test_dataloader(self) -> DataLoader:
-        sampler = BatchSampler(RandomSampler(self.train_data), batch_size=self.batch_size, drop_last=False)
+        sampler = BatchSampler(
+            RandomSampler(self.test_data), batch_size=self.batch_size, drop_last=False
+        )
         return DataLoader(
             self.test_data,
             batch_size=1,
             num_workers=0,
             persistent_workers=False,
-            sampler=sampler, 
+            sampler=sampler,
             collate_fn=self.collate_fn,
         )
-    
+
     def collate_fn(self, batch):
-    # batch is sparse csr matrix -> convert to dense tensor
+        # batch is sparse csr matrix -> convert to dense tensor
         data_batch = batch[0]["X"]
         if type(data_batch) == csr_matrix:
             data_batch = data_batch.tocoo()
             values = data_batch.data
-            indices = (data_batch.row, data_batch.col)
+            indices = np.array((data_batch.row, data_batch.col))
             shape = data_batch.shape
-            i,v,s = torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(shape)
-            X = torch.sparse.FloatTensor(i, v, s) # type: ignore
+            i, v, s = (
+                torch.LongTensor(indices),
+                torch.FloatTensor(values),
+                torch.Size(shape),
+            )
+            X = torch.sparse.FloatTensor(i, v, s)  # type: ignore
             X = X.to_dense()
         else:
             raise ValueError("Data type not supported")
 
-        return {"X":X, "y":batch[0]["y"]} # type: ignore
-    
+        return {"X": X, "y": batch[0]["y"]}  # type: ignore
+
+
 # Data Loader for creating Tokens from SMILES strings
 @gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
 class TFLoader(CustomDataLoader):
@@ -541,7 +553,7 @@ class TFLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
-            self.collate_fn
+            self.collate_fn,
         )
 
     def generate_features(self):
@@ -555,7 +567,7 @@ class TFLoader(CustomDataLoader):
         tokenized = tokenizer.tokenize(smiles)  # returns list[int] of length nxSMILES
         encoded = tokenizer.encode(
             tokenized
-        )  # returns list[list[int]] of length n x variable_length 
+        )  # returns list[list[int]] of length n x variable_length
         encoded = np.array(encoded, dtype="object")
         price = self.get_price()
         np.savez_compressed(self.pickle_path, price=price, features=encoded)
@@ -565,12 +577,12 @@ class TFLoader(CustomDataLoader):
         features = data["features"]
         price = data["price"]
         price = torch.from_numpy(price).float()
-        features = [torch.LongTensor(row) for row in features] #* tensors not padded
+        features = [torch.LongTensor(row) for row in features]  # * tensors not padded
 
         return price, features, None
-    
+
     def collate_fn(self, batch):
-        """ Takes list of tensors and pads them to same length for batching """
+        """Takes list of tensors and pads them to same length for batching"""
         data_batch = [b["X"] for b in batch]
         data_batch = pad_sequence(data_batch, batch_first=True, padding_value=0)
         y = torch.stack([b["y"] for b in batch])
@@ -586,12 +598,7 @@ if __name__ == "__main__":
     workers_loader = 8
     data_split = [0.8, 0.1, 0.1]
     efgloader = IFGLoader(
-        data_path,
-        feature_path,
-        batch_size,
-        workers_loader,
-        data_split,
-        df_name
+        data_path, feature_path, batch_size, workers_loader, data_split, df_name
     )
 
     efgloader.generate_features()
