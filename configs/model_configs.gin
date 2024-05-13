@@ -6,8 +6,8 @@ include 'configs/dataloader.gin'
 main.max_epoch = 100
 main.early_stopping = True
 main.patience = 20
-main.no_gpus = 1
-main.logging = True
+main.no_gpus = 0
+main.logging = False
 main.gradient_accum = 1
 
 # Model Hyperparameters
@@ -36,6 +36,7 @@ FP.input_size = %fp_size
 FP.hidden_size_1 = 500
 FP.hidden_size_2 = 350
 FP.hidden_size_3 = 200
+FP.dropout = 0.1
 FP.configure_optimizers.optimizer = %optimizer
 fp/torch.optim.Adam.lr = %lr
 

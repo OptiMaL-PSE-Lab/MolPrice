@@ -35,9 +35,8 @@ class Preprocessing:
     def _canonicalize_and_convert(
         self, smiles: str, price: float, unit: str, amount: float
     ) -> tuple[Optional[str], Optional[float]]:
-        smi = smiles.split(".")[-1]
         try:
-            mol = Chem.MolFromSmiles(Chem.MolToSmiles(Chem.MolFromSmiles(smi)))
+            mol = Chem.MolFromSmiles(Chem.MolToSmiles(Chem.MolFromSmiles(smiles)))
         except:
             mol = None
         if not mol:
@@ -75,23 +74,17 @@ class Preprocessing:
             return None
 
         return m_weight
-
+    
+    @staticmethod
     def reduce_size(
-        self, lower_bound: float, df: Optional[pd.DataFrame] = None
+        lower_bound: float, df: pd.DataFrame, name: str, data_path: Path
     ) -> None:
         """Reduce size of dataframe to a specified price"""
-        if hasattr(self, "data_frame"):
-            df = self.data_frame
-        elif not df:
-            raise ValueError(
-                "Dataframe not provided by user as kwarg or class instance"
-            )
-        df = df[df["price_mmol"].apply(np.log) > lower_bound]
-        df = df.drop(df.columns[0], axis=1)
-        df.to_csv(
-            str(self.data_path / f"{type(self).__name__}_reduced.csv"), index=False
+        df_new = df[df["price_mmol"] > lower_bound]
+        df_new = df_new.drop(df.columns[0], axis=1)
+        df_new.to_csv(data_path / f"{name}_reduced.txt", index=True
         )
-        self.data_frame = df
+        print(f"Reduced size of {name} dataset from {df.shape[0]} to {df_new.shape[0]} molecules")
 
     @staticmethod
     def plot_price_distribution(price_df: pd.DataFrame, dataset_name: str) -> None:
@@ -109,7 +102,7 @@ class Preprocessing:
             edgecolor="k",
             lw=1,
         )  # type:ignore
-        ax.set_xlabel(r"Price $(\$/mmol)$", fontsize=13)
+        ax.set_xlabel(r"log Price $(\$/mmol)$", fontsize=13)
         ax.set_ylabel(r"Frequency (%)", fontsize=13)
         ax.spines["right"].set_visible(False)
         ax.spines["top"].set_visible(False)
@@ -129,7 +122,7 @@ class Preprocessing:
             f.write(f"\nTop 50 most expensive molecules in {dataset_name}\n")
             f.write("-" * 50 + "\n")
             f.write(
-                str(price_df.nlargest(50, "price_mmol")[["smi_can", "price_mmol"]])
+                str(price_df.nlargest(10000, "price_mmol")[["smi_can", "price_mmol"]])
                 + "\n"
             )
             f.write(f"\nTop 50 cheapest molecules in {dataset_name}\n")
@@ -166,7 +159,7 @@ class Preprocessing:
                 edgecolor="black",
             )  # type:ignore
 
-        ax.set_xlabel(r"Price $(\$/mmol)$", fontsize=13)
+        ax.set_xlabel(r"log Price $(\$/mmol)$", fontsize=13)
         ax.set_ylabel(r"Frequency (%)", fontsize=13)
         ax.legend(fontsize=12, loc="upper left")
         ax.spines["right"].set_visible(False)
@@ -211,7 +204,7 @@ class ChemspaceExtractor(Preprocessing):
         df_chemspace["smi_can"] = smiles
         df_chemspace["price_mmol"] = new_price
         df_chemspace = df_chemspace.dropna()
-        df_chemspace.to_csv(str(self.data_path / "chemspace_data.csv"))
+        df_chemspace.to_csv(str(self.data_path / "chemspace_prices.txt"))
         return df_chemspace
 
 
@@ -234,7 +227,7 @@ class MolportExtractor(Preprocessing):
         temp_dir = tempfile.mkdtemp(dir=self.data_path)
         molport_path = self.data_path / self.csv_name
         df_molport = pd.read_csv(
-            molport_path, usecols=list(headers.keys()), dtype=headers, nrows=1000000
+            molport_path, usecols=list(headers.keys()), dtype=headers
         )
         df_molport.dropna(inplace=True)
         indices = self._get_indices(df_molport)
@@ -301,6 +294,8 @@ class MolportExtractor(Preprocessing):
                     outfile.write(infile.read())
 
         shutil.rmtree(temp_dir)
+
+        self.data_frame = pd.read_csv(self.data_path / "molport_prices.txt")
 
     def _get_indices(self, df_molport: pd.DataFrame) -> Deque[tuple[int, int]]:
         # Get indices of molecules with multiple prices
@@ -381,8 +376,8 @@ if __name__ == "__main__":
     arg_parser.add_argument(
         "--task",
         type=str,
-        choices=["extract", "plot"],
-        help="Whether to plot the data distribution or extract data from database",
+        choices=["extract", "plot", "reduce"],
+        help="Whether to plot the data distribution, extract data from database or reduce size of existing dataset",
         default=DEFAULT_TASK,
     )
     arg_parser.add_argument(
@@ -392,7 +387,7 @@ if __name__ == "__main__":
         default=DEFAULT_DATASETS,
     )
     arg_parser.add_argument(
-        "--price_threshold", type=float, default=DEFAULT_PRICE_THRESHOLD
+        "--price_threshold","--pt", type=float, default=DEFAULT_PRICE_THRESHOLD
     )
     arg_parser.add_argument(
         "--chunk_size",
@@ -416,7 +411,6 @@ if __name__ == "__main__":
                 check_extractor(db)
                 extractor = avaiable_extractors[db[:4]](data_path, db, args.chunk_size)
                 extractor.extract_data()
-                extractor.reduce_size(args.price_threshold)
         else:
             db = args.dataset[0]
             check_extractor(db)
@@ -424,7 +418,6 @@ if __name__ == "__main__":
                 data_path, db, args.chunk_size
             )
             extractor.extract_data()
-            extractor.reduce_size(args.price_threshold)
 
     elif args.task == "plot":
         print("Plotting price distribution(s)...")
@@ -438,5 +431,17 @@ if __name__ == "__main__":
                 {db.split("_")[0]: pd.read_csv(data_path / db) for db in args.dataset}
             )
         else:
-            df = pd.read_csv(data_path / args.dataset)
-            Preprocessing.plot_price_distribution(df, args.dataset.split(".")[0])
+            db = args.dataset[0]
+            df = pd.read_csv(data_path / db)
+            Preprocessing.plot_price_distribution(df, db.split("_")[0])
+    
+    elif args.task == "reduce":
+        print("Reducing size of dataset(s)...")
+        if len(args.dataset) > 1:
+            for db in args.dataset:
+                df = pd.read_csv(data_path / db)
+                Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)
+        else:
+            db = args.dataset[0]
+            df = pd.read_csv(data_path / db)
+            Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)

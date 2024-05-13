@@ -15,15 +15,11 @@ class Tokenizer:
     def __init__(
         self,
         vocab: dict,
-        max_len: int,
         no_processes: int,
         dataset_size: int,
-        padding_token: str = "[PAD]",
     ):
         self.vocab = vocab
-        self.max_len = max_len
         self.dataset_size = dataset_size
-        self.pad_token = padding_token
         self.no_processes = no_processes
 
     def tokenize(self, smi: str | list[str]) -> str | list[str]:
@@ -57,12 +53,7 @@ class Tokenizer:
         return tokenized  # type:ignore
 
     def _encode(self, tokens: str) -> list[int]:
-        # use padding
         token_list = tokens.split()
-        if len(token_list) < self.max_len:
-            token_list += [self.pad_token] * (self.max_len - len(token_list))
-        if len(token_list) > self.max_len:
-            print(f"Token length {len(token_list)} exceeds max length {self.max_len}")
         # encode tokens
         return [self.vocab[token] for token in token_list]
 
@@ -75,12 +66,12 @@ class Tokenizer:
                 )
             )
         return encoded
-
+    
 
 def calculate_max_training_step(path_data) -> None:
     batch_size, acc_batches, epochs = gin_qp("%batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
     dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
-    df = pd.read_csv(path_data / f"{dataframe_name}.csv")
+    df = pd.read_csv(path_data / dataframe_name)
     len_train = df.shape[0] * splits[0]
     batches_per_gpu = math.ceil(len_train / float(batch_size))
     train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
@@ -115,7 +106,7 @@ if __name__ == "__main__":
     no_cores = os.cpu_count() - 2  # type: ignore
     examples = pd.read_csv(smiles_path, header=0)
     dataset_size = examples.shape[0]
-    tokenizer = Tokenizer(vocab, 1000, no_cores, dataset_size)
+    tokenizer = Tokenizer(vocab, no_cores, dataset_size)
     examples = examples["smi_can"].tolist()
     tokenized = tokenizer.tokenize(examples)
     max_len = max(len(token.split()) for token in tokenized)

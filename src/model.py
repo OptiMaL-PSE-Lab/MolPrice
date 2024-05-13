@@ -277,8 +277,9 @@ class TransformerEncoder(CustomModule):
         self.save_hyperparameters(ignore="input_size")
 
     def forward(self, x) -> torch.Tensor:
-        max_len = self.find_max_input_length(x)
-        x = x[:, :max_len]
+        #! double check this
+        # max_len = self.find_max_input_length(x)
+        # x = x[:, :max_len]
         # x has dimensions of (N_batch, N_seq)
         embedded = self.embedding(
             x
@@ -303,11 +304,11 @@ class TransformerEncoder(CustomModule):
         mask = mask.bool()
         return mask
     
-    def find_max_input_length(self, x):
-        # x has dimensions of (N_batch, N_seq)
-        no_non_zero = torch.sum(x != 0, dim=1)
-        max_len = torch.max(no_non_zero)
-        return max_len
+    # def find_max_input_length(self, x):
+    #     # x has dimensions of (N_batch, N_seq)
+    #     no_non_zero = torch.sum(x != 0, dim=1)
+    #     max_len = torch.max(no_non_zero)
+    #     return max_len
 
     @gin.configurable(module="Transformer")  # type: ignore
     def configure_optimizers(

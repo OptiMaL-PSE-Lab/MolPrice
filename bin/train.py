@@ -111,7 +111,7 @@ def main(
 
     # within the checkpoint path, put info about the loggers files and the gin config
     config_info = gin.operative_config_str()
-    loggers_id = logger.version if logging else "version_" + logger.version  # type: ignore
+    loggers_id = logger.version if logging else "version_" + str(logger.version)  # type: ignore
     # write to new file the config_info and loggers_id
     with open(checkpoint_path / "config_info.txt", "w") as f:
         f.write(f"Loggers ID: {loggers_id}")
@@ -134,6 +134,7 @@ if __name__ == "__main__":
     gin_path_dataloader = str(path / "configs" / "dataloader.gin")
     data_path = path / "data"
     feature_path = data_path / "features"
+    database_path = data_path / "databases"
     checkpoint_path = path / "models"
     loader_dict = {
         "LSTM_EFG": EFGLoader,
@@ -147,7 +148,7 @@ if __name__ == "__main__":
         "--model",
         type=str,
         help="Model to train",
-        required=False,
+        required=True,
         choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
     )
     parser.add_argument(
@@ -168,12 +169,12 @@ if __name__ == "__main__":
     gin.bind_parameter("FPLoader.fp_type", args.fp)
 
     data_object = loader_dict[args.model]
-    data_module = data_object(data_path=data_path, feature_path=feature_path)
+    data_module = data_object(data_path=database_path, feature_path=feature_path)
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(gin_path_model)
     calculate_max_training_step(
-        data_path
+        database_path
     )  #! Specific to the scheduler used (i.e. OneCycleLR)
     gin.finalize()
     model_name = args.model.split("_")[0]
