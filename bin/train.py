@@ -133,7 +133,6 @@ if __name__ == "__main__":
     gin_path_model = str(path / "configs" / "model_configs.gin")
     gin_path_dataloader = str(path / "configs" / "dataloader.gin")
     data_path = path / "data"
-    feature_path = data_path / "features"
     database_path = data_path / "databases"
     checkpoint_path = path / "models"
     loader_dict = {
@@ -167,6 +166,8 @@ if __name__ == "__main__":
     args.log_path = path / "logs"
     gin.parse_config_file(gin_path_dataloader)
     gin.bind_parameter("FPLoader.fp_type", args.fp)
+    current_dataset = gin.query_parameter("%df_name").split(".")[0]
+    feature_path = data_path / "features"/ current_dataset
 
     data_object = loader_dict[args.model]
     data_module = data_object(data_path=database_path, feature_path=feature_path)
