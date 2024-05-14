@@ -1,4 +1,5 @@
 import pickle
+import os
 from abc import abstractmethod
 from collections import Counter
 from multiprocessing import Pool, Manager, cpu_count
@@ -163,7 +164,8 @@ class EFGLoader(CustomDataLoader):
             df_name,
         )
         self.vocab = Manager().dict()
-        self.vocab_path = data_path.parent / "vocab" / "vocab_EFG.pkl"
+        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_EFG.pkl"
+
 
     def load_features(self):
         # load from pickled features
@@ -206,6 +208,7 @@ class EFGLoader(CustomDataLoader):
             vocab = dict(self.vocab)
             cleavage(vocab, alpha=0.7)
             self.vocab = Manager().dict(vocab)
+            os.makedirs(self.vocab_path.parent, exist_ok=True)
             with open(self.vocab_path, "wb") as f:
                 pickle.dump(vocab, f)
 
@@ -299,7 +302,7 @@ class IFGLoader(CustomDataLoader):
             df_name,
         )
         self.vocab = Manager().dict()
-        self.vocab_path = data_path.parent / "vocab" / "vocab_IFG.pkl"
+        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_IFG.pkl"
 
     def load_features(self):
         # load from pickled features
