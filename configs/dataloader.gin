@@ -24,6 +24,6 @@ FPLoader.data_split = %data_split
 FPLoader.df_name = %df_name
 
 TFLoader.batch_size = %batch_size
-TFLoader.workers_loader = 0
+TFLoader.workers_loader = 10
 TFLoader.data_split = %data_split
 TFLoader.df_name = %df_name
