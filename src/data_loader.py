@@ -468,7 +468,7 @@ class FPLoader(CustomDataLoader):
                 fp = self.fp_gen.GetFingerprintAsNumPy(mol)
                 fps.append(fp)
 
-        fps = np.array(fps, dtype=np.int8)
+        fps = np.array(fps, dtype=np.uint8)
         price = self.get_price()
         np.savez_compressed(
             self.pickle_path, price=price, features=fps, allow_pickle=True
@@ -558,16 +558,27 @@ class TFLoader(CustomDataLoader):
             df_name,
             self.collate_fn,
         )
+        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_SMILES.txt"
 
     def generate_features(self):
         print("Creating features for Tokenized SMILES")
-        vocab_path = self.data_path.parent / "vocab" / "vocab_SMILES.txt"
-        with open(vocab_path, "r") as f:
-            vocab = {line.strip(): idx for idx, line in enumerate(f)}
         smiles = self.get_smiles()
         workers = cpu_count()
-        tokenizer = Tokenizer(vocab, workers, len(smiles))
+        tokenizer = Tokenizer( workers, len(smiles))
+        print("Tokenizing dataset...")
         tokenized = tokenizer.tokenize(smiles)  # returns list[int] of length nxSMILES
+        if not self.vocab_path.exists():
+            vocab = tokenizer.build_vocab(tokenized)
+            os.makedirs(self.vocab_path.parent, exist_ok=True)
+            with open(self.vocab_path, "w") as f:
+                for token in vocab.keys():
+                    f.write(f"{token}\n")
+        else:
+            tokenizer.load_vocab(self.vocab_path)
+            print(tokenizer.vocab)
+            exit()
+        del smiles
+        print("Encoding tokens...")
         encoded = tokenizer.encode(
             tokenized
         )  # returns list[list[int]] of length n x variable_length
