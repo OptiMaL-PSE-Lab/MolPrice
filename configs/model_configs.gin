@@ -42,7 +42,7 @@ fp/torch.optim.Adam.lr = %lr
 
 # again, transformer input size is a max value for the embedding
 lr_tf = 5e-5
-Transformer.input_size = 600
+Transformer.input_size = 700
 Transformer.embedding_size = 320
 Transformer.num_heads = 8
 Transformer.hidden_size = 600

@@ -85,20 +85,28 @@ class CustomDataLoader(LightningDataModule):
             self.generate_features()
         else:
             pass
-
+    
     def setup(self, stage: str) -> None:
         self.mydataset = FGDataset(*self.load_features())
         self.train_data, self.val_data, self.test_data = random_split(
             self.mydataset, self.data_split, generator=torch.Generator().manual_seed(42)
         )
+        if type(self).__name__ == "TFLoader":
+        # sort data in train_data by length and shuffle indices for faster training due to different lengths 
+            indices = sorted(range(len(self.train_data)), key=lambda x: len(self.train_data[x]["X"]), reverse=True)
+            # shuffle indices according to batch_size 
+            indices_groups = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
+            last_group = indices_groups.pop()
+            new_indices = [item for sublist in np.random.permutation(indices_groups) for item in sublist]
+            new_indices.extend(last_group)
+            self.train_data = Subset(self.train_data, new_indices)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
             self.train_data,
             batch_size=self.batch_size,
             num_workers=self.workers_loader,
-            persistent_workers=False,
-            shuffle=True,
+            persistent_workers=True,
             collate_fn=self.collate_fn,
         )
 
@@ -556,7 +564,7 @@ class TFLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
-            self.collate_fn,
+            self.collate_fn
         )
         self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_SMILES.txt"
 
@@ -575,8 +583,6 @@ class TFLoader(CustomDataLoader):
                     f.write(f"{token}\n")
         else:
             tokenizer.load_vocab(self.vocab_path)
-            print(tokenizer.vocab)
-            exit()
         del smiles
         print("Encoding tokens...")
         encoded = tokenizer.encode(
@@ -591,7 +597,7 @@ class TFLoader(CustomDataLoader):
         features = data["features"]
         price = data["price"]
         price = torch.from_numpy(price).float()
-        features = [torch.LongTensor(row) for row in features]  # * tensors not padded
+        features = [torch.Tensor(row) for row in features]  # * tensors not padded
 
         return price, features, None
 
@@ -599,6 +605,7 @@ class TFLoader(CustomDataLoader):
         """Takes list of tensors and pads them to same length for batching"""
         data_batch = [b["X"] for b in batch]
         data_batch = pad_sequence(data_batch, batch_first=True, padding_value=0)
+        data_batch = data_batch.long()
         y = torch.stack([b["y"] for b in batch])
         return {"X": data_batch, "y": y}
 
