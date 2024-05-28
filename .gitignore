@@ -1,0 +1,11 @@
+data/features
+data/databases
+data/**.txt
+data/vocab/**
+!data/vocab/example**
+figs/
+logs/
+.vscode/
+models/**/**txt
+models/**/**.ckpt
+**.pyc
