@@ -99,7 +99,7 @@ def calculate_max_training_step(path_data) -> None:
     df = pd.read_csv(path_data / dataframe_name)
     len_train = df.shape[0] * splits[0]
     batches_per_gpu = math.ceil(len_train / float(batch_size))
-    train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
+    train_steps = math.ceil(batches_per_gpu / acc_batches) * (epochs+1)
     gin.bind_parameter("transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps) 
 
 class LogFigureCallback(Callback):
