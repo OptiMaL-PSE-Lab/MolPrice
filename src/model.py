@@ -87,7 +87,6 @@ class FgLSTM(CustomModule):
             nn.Linear(hidden1_nn, hidden2_nn),
             nn.ReLU(),
             nn.Linear(hidden2_nn, output_size),
-            nn.ReLU(),
         )
 
     def forward(self, x, c):
@@ -202,7 +201,6 @@ class Fingerprints(CustomModule):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size_3, 1),
-            nn.ReLU(),
         )
         self.save_hyperparameters()
 
