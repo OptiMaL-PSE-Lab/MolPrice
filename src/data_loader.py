@@ -63,6 +63,7 @@ class CustomDataLoader(LightningDataModule):
         data_split: list[float],
         df_name: str,
         collate_func: Optional[Callable] = None,
+        hp_tuning: bool = False,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -72,6 +73,7 @@ class CustomDataLoader(LightningDataModule):
         self.workers_loader = workers_loader
         self.data_split = data_split
         self.collate_fn = collate_func
+        self.hp_tuning = hp_tuning
         self.mydataset: Dataset
         self.train_data: Subset
         self.val_data: Subset
@@ -80,8 +82,11 @@ class CustomDataLoader(LightningDataModule):
         self.dataframe: Path = self.data_path / df_name
 
     def prepare_data(self):
-        if not self.pickle_path.exists():
+        if not self.pickle_path.exists() and not self.hp_tuning:
             self.feature_path.mkdir(parents=True, exist_ok=True)
+            self.generate_features()
+        elif self.hp_tuning:
+            #* Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass
@@ -417,11 +422,13 @@ class FPLoader(CustomDataLoader):
         workers_loader,
         data_split,
         df_name,
+        hp_tuning,
         fp_type: str,
         fp_size: int,
         p_r_size: int,
         count_simulation: bool,
     ) -> None:
+        
         pickle_path = feature_path / f"features_FP_{fp_type}.pkl.npz"
         super().__init__(
             data_path,
@@ -432,7 +439,12 @@ class FPLoader(CustomDataLoader):
             data_split,
             df_name,
             self.collate_fn,
+            hp_tuning,
         )
+
+        if self.hp_tuning:
+            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}.pkl.npz"
+
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
@@ -450,6 +462,9 @@ class FPLoader(CustomDataLoader):
         return price, fps, None  # type: ignore
 
     def generate_features(self):
+        if os.path.exists(self.pickle_path):
+            return
+    
         print(f"Creating feature vectors for {self.fp_type} fingerprint")
         # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
         if self.fp_type == "morgan":

@@ -1,0 +1,18 @@
+import gin.torch.external_configurables
+
+include 'configs/dataloader.gin'
+
+# Model Hyperparameters
+
+# Constants 
+optimizer = @torch.optim.Adam
+lr = 1e-4
+weight_decay=1e-5
+
+FP.input_size = %fp_size
+FP.hidden_size_1 = 500
+FP.hidden_size_2 = 350
+FP.hidden_size_3 = 200
+FP.dropout = 0.1
+FP.configure_optimizers.optimizer = %optimizer
+fp/torch.optim.Adam.lr = %lr

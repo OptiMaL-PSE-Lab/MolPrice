@@ -3,7 +3,6 @@ import gin
 import lightning as L
 import datetime
 from datetime import date
-from pathlib import Path
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
 from lightning.pytorch.loggers import WandbLogger, CSVLogger
 from lightning.pytorch.callbacks import (
@@ -121,20 +120,13 @@ def main(
 
 if __name__ == "__main__":
     import gin
-    from pathlib import Path
     from argparse import ArgumentParser
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
     from src.model_utils import calculate_max_training_step
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
-
-    # Set up all paths
-    path = Path(__file__).parent.parent
-    gin_path_model = str(path / "configs" / "model_configs.gin")
-    gin_path_dataloader = str(path / "configs" / "dataloader.gin")
-    data_path = path / "data"
-    database_path = data_path / "databases"
-    checkpoint_path = path / "models"
+    from src.path_lib import *
+    
     loader_dict = {
         "LSTM_EFG": EFGLoader,
         "LSTM_IFG": IFGLoader,

@@ -13,6 +13,7 @@ from torchmetrics.regression import MeanSquaredError
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
 
+
 warnings.filterwarnings(
     "ignore", category=UserWarning, module="torch.nn.modules.activation"
 )
@@ -183,7 +184,7 @@ class FgLSTM(CustomModule):
 class Fingerprints(CustomModule):
     def __init__(
         self,
-        input_size,
+        input_size: int,
         hidden_size_1: int,
         hidden_size_2: int,
         hidden_size_3: int,
