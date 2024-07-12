@@ -1,10 +1,10 @@
 import gin
 import math
 import lightning as L
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchmetrics import R2Score
@@ -237,6 +237,11 @@ class Fingerprints(CustomModule):
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         r2_score = self.r2_score(output, labels)
+        if wandb.run:
+            if self.trainer.global_step == 0:
+                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("r2_score", summary="max")
+            
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss

@@ -307,7 +307,7 @@ class MolportExtractor(Preprocessing):
         print("Obtaining indices for molecules with multiple prices")
         for i in tqdm(range(len(count_df))):
             current_index = count_df.iloc[i, 0] + counting_index  # type:ignore
-            index_list.append((counting_index + 1, current_index))
+            index_list.append((counting_index + 1, current_index)) # type:ignore
             counting_index = current_index
 
         return index_list
