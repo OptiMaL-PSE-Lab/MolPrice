@@ -18,9 +18,12 @@ from src.data_loader import FPLoader
 
 
 def objective(trial: optuna.trial.Trial) -> float:
+    # check if there is an activate wandb session
+    if wandb.run is not None:
+        wandb.finish()
     # optimize learning rate, batch size, fingerprint size, hidden_dim, dropout
-    lr = trial.suggest_float("lr", 1e-5, 1e-1, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [64, 128, 256, 400])
+    lr = trial.suggest_float("lr", 1e-5, 5e-3, log=True)
+    batch_size = trial.suggest_categorical("batch_size", [64, 128, 256, 512])
     dropout = trial.suggest_float("dropout", 0.1, 0.3, step=0.05)
     fingerprint_size = trial.suggest_categorical("fingeprint_size", [1024, 2048, 4096])
     hidden_dim_1 = trial.suggest_categorical("hidden_dim_1", [256, 512, 1024])
@@ -43,6 +46,7 @@ def objective(trial: optuna.trial.Trial) -> float:
         config=config,
         save_dir=path / "logs" / "hp_tuning",
         log_model=False,
+        reinit=True
     )
 
     # set up the data loader
@@ -72,7 +76,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 
     trainer = L.Trainer(
         logger = logger,
-        max_epochs=25,
+        max_epochs=20,
         accelerator="auto",
         devices=1, 
         callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
@@ -103,7 +107,6 @@ def objective(trial: optuna.trial.Trial) -> float:
 
     # log the final validation loss to wandb logger
     logger.log_metrics({"val_loss": val_loss})
-    wandb.finish()
 
     return val_loss
 
@@ -114,7 +117,7 @@ if __name__ == "__main__":
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
 
     study = optuna.create_study(direction="minimize", pruner=pruner, study_name="fp_tuning")
-    study.optimize(objective, n_trials=40)
+    study.optimize(objective, n_trials=30)
 
     print("Number of finished trials: ", len(study.trials))
 

@@ -94,12 +94,12 @@ class Tokenizer:
     
 
 def calculate_max_training_step(path_data) -> None:
-    batch_size, acc_batches, epochs = gin_qp("%batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
+    batch_size, acc_batches, epochs = gin_qp("TFLoader.batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
     dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
     df = pd.read_csv(path_data / dataframe_name)
     len_train = df.shape[0] * splits[0]
     batches_per_gpu = math.ceil(len_train / float(batch_size))
-    train_steps = math.ceil(batches_per_gpu / acc_batches) * (epochs+1)
+    train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
     gin.bind_parameter("transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps) 
 
 class LogFigureCallback(Callback):

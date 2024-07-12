@@ -203,7 +203,7 @@ class Fingerprints(CustomModule):
             nn.Dropout(dropout),
             nn.Linear(hidden_size_3, 1),
         )
-        self.save_hyperparameters()
+        # self.save_hyperparameters() #! Turn this line of if hp_tuning is used
 
     def forward(self, x):
         x = self.neural_network(x)

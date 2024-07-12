@@ -83,17 +83,18 @@ def main(
         trainer = L.Trainer(
             accelerator="cuda",
             devices=devices,
-            max_epochs=max_epoch,
+            max_epochs=max_epoch-1,
             logger=logger,
             callbacks=callbacks,
             gradient_clip_val=1.0,
-            log_every_n_steps=200,
+            log_every_n_steps=500,
+            accumulate_grad_batches=gradient_accum
         )
     else:
         print("Training resumes on CPU.")
         trainer = L.Trainer(
             accelerator="cpu",
-            max_epochs=max_epoch,
+            max_epochs=max_epoch-1,
             logger=logger,
             callbacks=callbacks,
             gradient_clip_val=1.0,
@@ -153,6 +154,16 @@ if __name__ == "__main__":
         default="morgan",
     )
 
+    parser.add_argument(
+        "--load_checkpoint",
+        "--load",
+        dest="load",
+        type=str,
+        help="Path to checkpoint to load",
+        required=False,
+        default=None,
+    )
+
     args = parser.parse_args()
     args.checkpoint_path = checkpoint_path
     args.log_path = path / "logs"
@@ -176,5 +187,10 @@ if __name__ == "__main__":
         "Transformer": TransformerEncoder,
         "Fingerprint": Fingerprints,
     }
-    model = model_dict[model_name](gin.REQUIRED)
+    if isinstance(args.load, str):
+        #! arg args.load later for proper checkpoint loading
+        model = model_dict[model_name].load_from_checkpoint(checkpoint_path / "Transformer-morgan-05292024-17/epoch=49-val_loss=0.895.ckpt")
+        print("loaded")
+    else: 
+        model = model_dict[model_name](gin.REQUIRED)
     main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore
