@@ -173,7 +173,7 @@ if __name__ == "__main__":
     feature_path = data_path / "features"/ current_dataset
 
     data_object = loader_dict[args.model]
-    data_module = data_object(data_path=database_path, feature_path=feature_path)
+    data_module = data_object(data_path=database_path, feature_path=feature_path, hp_tuning=False)
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(gin_path_model)

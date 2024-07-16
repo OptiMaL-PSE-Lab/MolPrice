@@ -62,8 +62,8 @@ class CustomDataLoader(LightningDataModule):
         workers_loader: int,
         data_split: list[float],
         df_name: str,
+        hp_tuning: bool,
         collate_func: Optional[Callable] = None,
-        hp_tuning: bool = False,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -86,23 +86,34 @@ class CustomDataLoader(LightningDataModule):
             self.feature_path.mkdir(parents=True, exist_ok=True)
             self.generate_features()
         elif self.hp_tuning:
-            #* Only coded for fingerprints at the moment
+            # * Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass
-    
+
     def setup(self, stage: str) -> None:
         self.mydataset = FGDataset(*self.load_features())
         self.train_data, self.val_data, self.test_data = random_split(
             self.mydataset, self.data_split, generator=torch.Generator().manual_seed(42)
         )
         if type(self).__name__ == "TFLoader":
-        # sort data in train_data by length and shuffle indices for faster training due to different lengths 
-            indices = sorted(range(len(self.train_data)), key=lambda x: len(self.train_data[x]["X"]), reverse=True)
-            # shuffle indices according to batch_size 
-            indices_groups = [indices[i:i + self.batch_size] for i in range(0, len(indices), self.batch_size)]
+            # sort data in train_data by length and shuffle indices for faster training due to different lengths
+            indices = sorted(
+                range(len(self.train_data)),
+                key=lambda x: len(self.train_data[x]["X"]),
+                reverse=True,
+            )
+            # shuffle indices according to batch_size
+            indices_groups = [
+                indices[i : i + self.batch_size]
+                for i in range(0, len(indices), self.batch_size)
+            ]
             last_group = indices_groups.pop()
-            new_indices = [item for sublist in np.random.permutation(indices_groups) for item in sublist]
+            new_indices = [
+                item
+                for sublist in np.random.permutation(indices_groups)
+                for item in sublist
+            ]
             new_indices.extend(last_group)
             self.train_data = Subset(self.train_data, new_indices)
 
@@ -164,7 +175,14 @@ class CustomDataLoader(LightningDataModule):
 @gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
 class EFGLoader(CustomDataLoader):
     def __init__(
-        self, data_path, feature_path, batch_size, workers_loader, data_split, df_name
+        self,
+        data_path,
+        feature_path,
+        batch_size,
+        workers_loader,
+        data_split,
+        df_name,
+        hp_tuning,
     ) -> None:
         pickle_path = feature_path / "features_EFG.pkl.npz"
         super().__init__(
@@ -175,10 +193,12 @@ class EFGLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
+            hp_tuning,
         )
         self.vocab = Manager().dict()
-        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_EFG.pkl"
-
+        self.vocab_path = (
+            data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_EFG.pkl"
+        )
 
     def load_features(self):
         # load from pickled features
@@ -302,7 +322,14 @@ class EFGLoader(CustomDataLoader):
 @gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
 class IFGLoader(CustomDataLoader):
     def __init__(
-        self, data_path, feature_path, batch_size, workers_loader, data_split, df_name
+        self,
+        data_path,
+        feature_path,
+        batch_size,
+        workers_loader,
+        data_split,
+        df_name,
+        hp_tuning,
     ) -> None:
         pickle_path = feature_path / "features_IFG.pkl.npz"
         super().__init__(
@@ -313,9 +340,12 @@ class IFGLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
+            hp_tuning,
         )
         self.vocab = Manager().dict()
-        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_IFG.pkl"
+        self.vocab_path = (
+            data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_IFG.pkl"
+        )
 
     def load_features(self):
         # load from pickled features
@@ -428,7 +458,7 @@ class FPLoader(CustomDataLoader):
         p_r_size: int,
         count_simulation: bool,
     ) -> None:
-        
+
         pickle_path = feature_path / f"features_FP_{fp_type}.pkl.npz"
         super().__init__(
             data_path,
@@ -438,8 +468,8 @@ class FPLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
-            self.collate_fn,
             hp_tuning,
+            self.collate_fn,
         )
 
         if self.hp_tuning:
@@ -464,7 +494,7 @@ class FPLoader(CustomDataLoader):
     def generate_features(self):
         if os.path.exists(self.pickle_path):
             return
-    
+
         print(f"Creating feature vectors for {self.fp_type} fingerprint")
         # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
         if self.fp_type == "morgan":
@@ -569,6 +599,7 @@ class TFLoader(CustomDataLoader):
         workers_loader,
         data_split,
         df_name,
+        hp_tuning,
     ) -> None:
         pickle_path = feature_path / "features_TF.pkl.npz"
         super().__init__(
@@ -579,15 +610,18 @@ class TFLoader(CustomDataLoader):
             workers_loader,
             data_split,
             df_name,
-            self.collate_fn
+            hp_tuning,
+            self.collate_fn,
         )
-        self.vocab_path = data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_SMILES.txt"
+        self.vocab_path = (
+            data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_SMILES.txt"
+        )
 
     def generate_features(self):
         print("Creating features for Tokenized SMILES")
         smiles = self.get_smiles()
         workers = cpu_count()
-        tokenizer = Tokenizer( workers, len(smiles))
+        tokenizer = Tokenizer(workers, len(smiles))
         print("Tokenizing dataset...")
         tokenized = tokenizer.tokenize(smiles)  # returns list[int] of length nxSMILES
         if not self.vocab_path.exists():
@@ -634,7 +668,13 @@ if __name__ == "__main__":
     workers_loader = 8
     data_split = [0.8, 0.1, 0.1]
     efgloader = IFGLoader(
-        data_path, feature_path, batch_size, workers_loader, data_split, df_name
+        data_path,
+        feature_path,
+        batch_size,
+        workers_loader,
+        data_split,
+        df_name,
+        hp_tuning=False,
     )
 
     efgloader.generate_features()
