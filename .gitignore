@@ -5,7 +5,9 @@ data/vocab/**
 !data/vocab/example**
 figs/
 logs/
+data_splits/
 .vscode/
 models/**/**txt
 models/**/**.ckpt
 **.pyc
+scripts/train_model.sh.o**
