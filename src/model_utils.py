@@ -95,6 +95,8 @@ class Tokenizer:
 
 def calculate_max_training_step(path_data) -> None:
     batch_size, acc_batches, epochs = gin_qp("TFLoader.batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
+    if not isinstance(batch_size, int):
+        batch_size = gin_qp("%batch_size")
     dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
     df = pd.read_csv(path_data / dataframe_name)
     len_train = df.shape[0] * splits[0]

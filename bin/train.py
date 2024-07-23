@@ -11,7 +11,6 @@ from lightning.pytorch.callbacks import (
     LearningRateMonitor,
 )
 from lightning.pytorch import LightningModule
-from lightning.pytorch.tuner import Tuner  # type: ignore
 
 from src.data_loader import CustomDataLoader
 import gin.torch.external_configurables
@@ -88,7 +87,8 @@ def main(
             callbacks=callbacks,
             gradient_clip_val=1.0,
             log_every_n_steps=500,
-            accumulate_grad_batches=gradient_accum
+            accumulate_grad_batches=gradient_accum,
+            enable_progress_bar=False,
         )
     else:
         print("Training resumes on CPU.")
@@ -99,10 +99,8 @@ def main(
             callbacks=callbacks,
             gradient_clip_val=1.0,
             log_every_n_steps=500,
+            enable_progress_bar=False,
         )
-
-    # tuner = Tuner(trainer)
-    # tuner.scale_batch_size(model, datamodule=data_module, mode="power", max_trials=7)
 
     trainer.fit(
         model,
