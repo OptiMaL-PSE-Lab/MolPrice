@@ -13,7 +13,7 @@ import pandas as pd
 import torch
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator  # type: ignore
-from lightning.pytorch import LightningDataModule
+from pytorch_lightning import LightningDataModule
 from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
@@ -515,7 +515,7 @@ class FPLoader(CustomDataLoader):
             raise ValueError("Fingerprint type not supported")
 
         fps = []
-        for smi in self.get_batch_smiles(10000):
+        for smi in self.get_batch_smiles(100000):
             for s in smi:
                 mol = Chem.MolFromSmiles(s)  # type: ignore
                 fp = self.fp_gen.GetFingerprintAsNumPy(mol)
@@ -578,7 +578,7 @@ class FPLoader(CustomDataLoader):
             i, v, s = (
                 torch.LongTensor(indices),
                 torch.FloatTensor(values),
-                torch.Size(shape),
+                torch.Size(shape),  # type: ignore
             )
             X = torch.sparse.FloatTensor(i, v, s)  # type: ignore
             X = X.to_dense()
@@ -657,6 +657,161 @@ class TFLoader(CustomDataLoader):
         data_batch = data_batch.long()
         y = torch.stack([b["y"] for b in batch])
         return {"X": data_batch, "y": y}
+
+
+# Data Loader explicitly used for testing on diverse datasets
+class TestLoader(LightningDataModule):
+    def __init__(
+        self,
+        test_file: Path,
+        data_path: Path,
+        batch_size: int,
+        model_name: str,
+        has_price: bool,
+    ):
+        super().__init__()
+        self.test_file = test_file
+        self.data_path = data_path
+        self.batch_size = batch_size
+        self.model_name = model_name
+        self.has_price = has_price
+
+    def prepare_data(self):
+
+        # query standard configs from gin
+        df_name = gin.query_parameter("%df_name")
+        data_split = gin.query_parameter("%data_split")
+
+        # get smiles from data frame
+        smiles = self.get_smiles()
+
+        if self.model_name == "Fingerprint":
+            fp_type = gin.query_parameter("FPLoader.fp_type")
+            p_r_size = gin.query_parameter("FPLoader.p_r_size")
+            count_sim = gin.query_parameter("FPLoader.count_simulation")
+            fp_size = gin.query_parameter("%fp_size")
+            print(f"Creating feature vectors for {fp_type} fingerprint")
+
+            if fp_type == "morgan":
+                # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
+                self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+                    radius=p_r_size, fpSize=fp_size, countSimulation=count_sim
+                )
+            elif fp_type == "rdkit":
+                self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
+                    maxPath=p_r_size, fpSize=fp_size, countSimulation=count_sim
+                )
+            elif fp_type == "atom":
+                self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
+                    maxDistance=p_r_size,
+                    fpSize=fp_size,
+                    countSimulation=count_sim,
+                )
+
+            fps = []
+
+            for s in tqdm(smiles):
+                mol = Chem.MolFromSmiles(s)  # type: ignore
+                fp = self.fp_gen.GetFingerprintAsNumPy(mol).tolist()
+                fps.append(fp)
+
+            fps = torch.FloatTensor(fps)
+            fps = [fps, None]
+
+        elif self.model_name == "Transformer":
+            print("Creating features for Tokenized SMILES")
+            workers = cpu_count()
+            tokenizer = Tokenizer(workers, len(smiles))
+            print("Tokenizing dataset...")
+            tokenized = tokenizer.tokenize(
+                smiles
+            )  # returns list[int] of length nxSMILES
+            vocab_path = (
+                self.data_path.parent
+                / "vocab"
+                / df_name.split(".")[0]
+                / "vocab_SMILES.txt"
+            )
+            tokenizer.load_vocab(vocab_path)
+            print("Encoding tokens...")
+            fps = tokenizer.encode(tokenized)
+            fps = torch.LongTensor(fps)
+            fps = [fps, None]
+
+        elif self.model_name[:4] == "LSTM":
+            current_dataset = df_name.split(".")[0]
+            if self.model_name == "LSTM_EFG":
+                lstm_loader = EFGLoader(
+                    self.data_path,
+                    self.data_path,
+                    64,
+                    10,
+                    data_split,
+                    current_dataset,
+                    False,
+                )
+            elif self.model_name == "LSTM_IFG":
+                lstm_loader = IFGLoader(
+                    self.data_path,
+                    self.data_path,
+                    64,
+                    10,
+                    data_split,
+                    current_dataset,
+                    False,
+                )
+            else:
+                raise ValueError("Model not supported")
+
+            workers = lstm_loader.workers_loader
+            with Pool(workers) as p:
+                features = list(
+                    tqdm(
+                        p.imap(
+                            lstm_loader._create_embeddings,
+                            smiles,
+                            chunksize=5 * workers,
+                        ),
+                        total=len(smiles),
+                    )
+                )
+
+            #! watch out for this possible error
+            # price, features = zip(*[(price[idx], features[idx]) for idx, i in enumerate(features) if i])
+            # count the occurence of features
+            features = [Counter(f) for f in features]
+            counts = [torch.Tensor(list(f.values())) for f in features]
+            features = [torch.Tensor(list(f.keys())) for f in features]
+            padded_features = pad_sequence(features, batch_first=True, padding_value=0)
+            padded_counts = pad_sequence(counts, batch_first=True, padding_value=0)
+            padded_features = padded_features.long()
+            padded_counts = padded_counts.long()
+
+            fps = [padded_features, padded_counts]
+
+        return fps
+
+    def test_dataloader(self) -> DataLoader:
+        print("preparing features for testing")
+        features = self.prepare_data()
+        first_feat = features[0]
+        if self.has_price:
+            df = pd.read_csv(self.test_file)
+            price = df["price"].apply(np.log).to_list()
+        else:
+            price = torch.FloatTensor(torch.zeros(first_feat.shape[0]))
+        test_data = FGDataset(price, *features)  # type: ignore
+
+        return DataLoader(
+            test_data,
+            batch_size=self.batch_size,
+            num_workers=10,
+            persistent_workers=True,
+        )
+
+    def get_smiles(self) -> list[str]:
+        df = pd.read_csv(self.test_file)
+        return df["smi_can"].to_list()
 
 
 if __name__ == "__main__":

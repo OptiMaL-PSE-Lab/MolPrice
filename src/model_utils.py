@@ -9,7 +9,7 @@ from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
 from multiprocessing import Pool
-from lightning.pytorch.callbacks import Callback
+from pytorch_lightning.callbacks import Callback
 
 
 class Tokenizer:
@@ -34,15 +34,15 @@ class Tokenizer:
             return self._batch_encode(tokens)
         elif isinstance(tokens, str):
             return self._encode(tokens)
-        
+
     def build_vocab(self, tokens: str | list[str]) -> dict[str, int]:
         print("Building vocabulary...")
-        # add special tokens 
+        # add special tokens
         vocab = ["[PAD]", "[CLS]", "[SEP]", "[MASK]"]
         for token in tqdm(tokens):
             token = token.split(" ")
             for t in token:
-                if t not in vocab: 
+                if t not in vocab:
                     vocab.append(t)
         # add 20 [UNUSED#1] tokens to the vocab
         for i in range(20):
@@ -91,10 +91,14 @@ class Tokenizer:
                 )
             )
         return encoded
-    
+
 
 def calculate_max_training_step(path_data) -> None:
-    batch_size, acc_batches, epochs = gin_qp("TFLoader.batch_size"), gin_qp("main.gradient_accum"), gin_qp("main.max_epoch")
+    batch_size, acc_batches, epochs = (
+        gin_qp("TFLoader.batch_size"),
+        gin_qp("main.gradient_accum"),
+        gin_qp("main.max_epoch"),
+    )
     if not isinstance(batch_size, int):
         batch_size = gin_qp("%batch_size")
     dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
@@ -102,21 +106,9 @@ def calculate_max_training_step(path_data) -> None:
     len_train = df.shape[0] * splits[0]
     batches_per_gpu = math.ceil(len_train / float(batch_size))
     train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
-    gin.bind_parameter("transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps) 
-
-class LogFigureCallback(Callback):
-    #! code this up to log the r2 figure to wandb
-    def plot_pred_vs_true(self, logits: np.ndarray, labels: np.ndarray, r2score: float):
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.hexbin(labels, logits, gridsize=100, cmap="viridis", bins="log")
-        plt.colorbar()
-        ax.set_xlabel("True values")
-        ax.set_ylabel("Predicted values")
-        ax.set_title("Predicted vs True values")
-        min_val, max_val = np.min([labels, logits]), np.max([labels, logits])
-        ax.plot([min_val, max_val], [min_val, max_val], color="black")
-        ax.legend(["R2 score: {:.3f}".format(r2score)])
-        return fig
+    gin.bind_parameter(
+        "transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps
+    )
 
 
 if __name__ == "__main__":
@@ -125,7 +117,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     file_path = Path(__file__).parent.parent
-    vocab_path = file_path / "data/vocab" / "chemspace_reduced" /"vocab_SMILES.txt"
+    vocab_path = file_path / "data/vocab" / "chemspace_reduced" / "vocab_SMILES.txt"
     smiles_path = file_path / "data/databases" / "chemspace_reduced.txt"
 
     no_cores = os.cpu_count() - 2  # type: ignore

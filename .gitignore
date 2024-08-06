@@ -1,13 +1,19 @@
+# data files
 data/features
 data/databases
 data/**.txt
 data/vocab/**
+datasets.txt
 !data/vocab/example**
+# directories
 figs/
 logs/
 data_splits/
-.vscode/
+# models
 models/**/**txt
 models/**/**.ckpt
+# system dir
+.vscode/
 **.pyc
+# hpc outpou
 scripts/train_model.sh.o**

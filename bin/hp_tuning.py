@@ -7,8 +7,8 @@ import os
 import gin
 import optuna
 import wandb
-import lightning as L
-from lightning.pytorch.loggers import WandbLogger
+import pytorch_lightning as L
+from pytorch_lightning.loggers import WandbLogger
 from optuna.integration import PyTorchLightningPruningCallback  # type: ignore
 
 from src.model import Fingerprints
@@ -30,7 +30,7 @@ def objective(trial: optuna.trial.Trial) -> float:
     hidden_dim_3 = trial.suggest_categorical("hidden_dim_3", [64, 128, 256, 512])
 
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
-    feature_path = data_path / "features" / f"{current_dataset}/hp_tuning"
+    feature_path = DATA_PATH / "features" / f"{current_dataset}/hp_tuning"
 
     config = dict(trial.params)
     config["trial_number"] = trial.number
@@ -51,7 +51,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 
     # set up the data loader
     data_object = FPLoader(
-        data_path=database_path,
+        data_path=DATABASE_PATH,
         feature_path=feature_path,
         batch_size=batch_size,
         workers_loader=gin.REQUIRED,
@@ -72,7 +72,7 @@ def objective(trial: optuna.trial.Trial) -> float:
         hidden_size_3=hidden_dim_3,
         dropout=dropout,
     )
-    gin.parse_config_file(gin_path_tuning)
+    gin.parse_config_file(GIN_PATH_TUNING)
     gin.bind_parameter("torch.optim.Adam.lr", lr)
 
     trainer = L.Trainer(
@@ -104,7 +104,7 @@ def objective(trial: optuna.trial.Trial) -> float:
 if __name__ == "__main__":
     from src.path_lib import *
 
-    gin.parse_config_file(gin_path_dataloader)
+    gin.parse_config_file(GIN_PATH_DATALOADER)
 
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
 

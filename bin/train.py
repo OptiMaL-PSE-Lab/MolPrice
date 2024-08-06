@@ -1,16 +1,15 @@
 import os
 import gin
-import lightning as L
+import pytorch_lightning as L
 import datetime
 from datetime import date
-from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
-from lightning.pytorch.loggers import WandbLogger, CSVLogger
-from lightning.pytorch.callbacks import (
+from pytorch_lightning.loggers import WandbLogger, CSVLogger
+from pytorch_lightning.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
     LearningRateMonitor,
 )
-from lightning.pytorch import LightningModule
+from pytorch_lightning import LightningModule
 
 from src.data_loader import CustomDataLoader
 import gin.torch.external_configurables
@@ -78,23 +77,24 @@ def main(
         logger = CSVLogger(save_dir=args.log_path)
 
     if no_gpus > 0:
+        torch.set_float32_matmul_precision("medium")
         devices = [i for i in range(no_gpus)]
         trainer = L.Trainer(
             accelerator="cuda",
             devices=devices,
-            max_epochs=max_epoch-1,
+            max_epochs=max_epoch - 1,
             logger=logger,
             callbacks=callbacks,
             gradient_clip_val=1.0,
             log_every_n_steps=500,
             accumulate_grad_batches=gradient_accum,
-            enable_progress_bar=False,
+            enable_progress_bar=True,
         )
     else:
         print("Training resumes on CPU.")
         trainer = L.Trainer(
             accelerator="cpu",
-            max_epochs=max_epoch-1,
+            max_epochs=max_epoch - 1,
             logger=logger,
             callbacks=callbacks,
             gradient_clip_val=1.0,
@@ -119,13 +119,14 @@ def main(
 
 if __name__ == "__main__":
     import gin
+    import torch
     from argparse import ArgumentParser
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
     from src.model_utils import calculate_max_training_step
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
     from src.path_lib import *
-    
+
     loader_dict = {
         "LSTM_EFG": EFGLoader,
         "LSTM_IFG": IFGLoader,
@@ -153,31 +154,33 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--load_checkpoint",
-        "--load",
-        dest="load",
+        "--checkpoint_name",
+        "--cn",
+        dest="cn",
         type=str,
-        help="Path to checkpoint to load",
+        help="Name of the checkpoint file to load",
         required=False,
         default=None,
     )
 
     args = parser.parse_args()
-    args.checkpoint_path = checkpoint_path
+    args.checkpoint_path = CHECKPOINT_PATH
     args.log_path = path / "logs"
-    gin.parse_config_file(gin_path_dataloader)
+    gin.parse_config_file(GIN_PATH_DATALOADER)
     gin.bind_parameter("FPLoader.fp_type", args.fp)
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
-    feature_path = data_path / "features"/ current_dataset
+    feature_path = DATA_PATH / "features" / current_dataset
 
     data_object = loader_dict[args.model]
-    data_module = data_object(data_path=database_path, feature_path=feature_path, hp_tuning=False)
+    data_module = data_object(
+        data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+    )
 
     # parse model gin file after data_object has been loaded
-    gin.parse_config_file(gin_path_model)
+    gin.parse_config_file(GIN_PATH_MODEL)
     calculate_max_training_step(
-        database_path
-    )  #! Specific to the scheduler used (i.e. OneCycleLR)
+        DATABASE_PATH
+    )  # * Specific to the scheduler used (i.e. OneCycleLR)
     gin.finalize()
     model_name = args.model.split("_")[0]
     model_dict = {
@@ -185,10 +188,9 @@ if __name__ == "__main__":
         "Transformer": TransformerEncoder,
         "Fingerprint": Fingerprints,
     }
-    if isinstance(args.load, str):
-        #! arg args.load later for proper checkpoint loading
-        model = model_dict[model_name].load_from_checkpoint(checkpoint_path / "Transformer-morgan-05292024-17/epoch=49-val_loss=0.895.ckpt")
-        print("loaded")
-    else: 
+    if isinstance(args.cn, str):
+        model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+        print("Model loaded - training resumes.")
+    else:
         model = model_dict[model_name](gin.REQUIRED)
     main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore

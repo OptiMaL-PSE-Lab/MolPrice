@@ -2,19 +2,21 @@ from pathlib import Path
 
 __all__ = [
     "path",
-    "gin_path_model",
-    "gin_path_dataloader",
-    "gin_path_tuning",
-    "data_path",
-    "database_path",
-    "checkpoint_path",
+    "GIN_PATH_MODEL",
+    "GIN_PATH_DATALOADER",
+    "GIN_PATH_TUNING",
+    "DATA_PATH",
+    "DATABASE_PATH",
+    "CHECKPOINT_PATH",
+    "TEST_PATH",
 ]
 
 # Set up all paths
 path = Path(__file__).parent.parent
-gin_path_model = str(path / "configs" / "model_configs.gin")
-gin_path_dataloader = str(path / "configs" / "dataloader.gin")
-gin_path_tuning = str(path / "configs" / "hp_tuning.gin")
-data_path = path / "data"
-database_path = data_path / "databases"
-checkpoint_path = path / "models"
+GIN_PATH_MODEL = str(path / "configs" / "model_configs.gin")
+GIN_PATH_DATALOADER = str(path / "configs" / "dataloader.gin")
+GIN_PATH_TUNING = str(path / "configs" / "hp_tuning.gin")
+DATA_PATH = path / "data"
+DATABASE_PATH = DATA_PATH / "databases"
+CHECKPOINT_PATH = path / "models"
+TEST_PATH = path / "testing"

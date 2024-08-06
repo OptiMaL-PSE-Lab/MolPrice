@@ -1,6 +1,6 @@
 import gin
 import math
-import lightning as L
+import pytorch_lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +8,11 @@ import wandb
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchmetrics import R2Score
-from torchmetrics.regression import MeanSquaredError
+from torchmetrics.regression import (
+    MeanSquaredError,
+    MeanAbsoluteError,
+    SpearmanCorrCoef,
+)
 
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
@@ -22,9 +26,16 @@ warnings.filterwarnings(
 class CustomModule(L.LightningModule):
     def __init__(self) -> None:
         super().__init__()
+        self.test_predictions = []
+        self.test_labels = []
 
     def mse_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         metric = MeanSquaredError()
+        metric = metric.to(device=logits.device)
+        return metric(logits, labels)
+
+    def mae_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        metric = MeanAbsoluteError()
         metric = metric.to(device=logits.device)
         return metric(logits, labels)
 
@@ -32,6 +43,27 @@ class CustomModule(L.LightningModule):
         metric = R2Score()
         metric = metric.to(device=logits.device)
         return metric(target=labels, preds=logits)
+
+    def spearman_corr(self, logits: torch.Tensor, labels: torch.Tensor):
+        metric = SpearmanCorrCoef()
+        metric = metric.to(device=logits.device)
+        return metric(logits, labels)
+
+    def on_test_epoch_end(self):
+        all_predictions = torch.cat(self.test_predictions)
+        all_labels = torch.cat(self.test_labels)
+        # Calculate R2 score on the entire dataset
+        spearmean_corr = self.spearman_corr(all_predictions, all_labels.view(-1, 1))
+        r2_score = self.r2_score(all_predictions, all_labels.view(-1, 1))
+        self.log_dict({"rs": spearmean_corr, "r2_score": r2_score})
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0) -> list[torch.Tensor]:
+        if self == "FgLSTM":
+            inputs, counts = batch["X"], batch["c"]
+            return self(inputs, counts)
+        else:
+            inputs = batch["X"]
+            return self(inputs)
 
 
 # class to be used for EFG/IFG model
@@ -162,6 +194,10 @@ class FgLSTM(CustomModule):
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         r2_score = self.r2_score(output, labels)
+        if wandb.run:
+            if self.trainer.global_step == 0:
+                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("r2_score", summary="max")
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss, r2_score
@@ -171,12 +207,13 @@ class FgLSTM(CustomModule):
         output, perm_idx = self.forward(inputs, counts)
         labels = labels[perm_idx]
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
-        scores_to_log = {"test_loss": loss, "r2_score": r2_score}
+        self.test_predictions.append(output)
+        self.test_labels.append(labels)
+        mse_loss = self.mse_loss(output, labels)
+        mae_loss = self.mae_loss(output, labels)
+        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
-        return loss, r2_score
+        return mse_loss
 
 
 # Used for Fingerprints
@@ -203,7 +240,7 @@ class Fingerprints(CustomModule):
             nn.Dropout(dropout),
             nn.Linear(hidden_size_3, 1),
         )
-        # self.save_hyperparameters() #! Turn this line of if hp_tuning is used
+        self.save_hyperparameters()  #! Comment line for hp_tuning
 
     def forward(self, x):
         x = self.neural_network(x)
@@ -241,7 +278,7 @@ class Fingerprints(CustomModule):
             if self.trainer.global_step == 0:
                 wandb.define_metric("val_loss", summary="min")
                 wandb.define_metric("r2_score", summary="max")
-            
+
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return loss
@@ -250,12 +287,13 @@ class Fingerprints(CustomModule):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
-        scores_to_log = {"test_loss": loss, "r2_score": r2_score}
+        self.test_predictions.append(output)
+        self.test_labels.append(labels)
+        mse_loss = self.mse_loss(output, labels)
+        mae_loss = self.mae_loss(output, labels)
+        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
-        return loss
+        return mse_loss
 
 
 # class to be used for SMILES model
@@ -348,20 +386,25 @@ class TransformerEncoder(CustomModule):
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         r2_score = self.r2_score(output, labels)
+        if wandb.run:
+            if self.trainer.global_step == 0:
+                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("r2_score", summary="max")
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
-        return loss, r2_score
+        return loss
 
     def test_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)  # type: ignore
-        r2_score = self.r2_score(output.cpu().numpy(), labels.cpu().numpy())
-        r2_score = torch.tensor(r2_score)
-        scores_to_log = {"test_loss": loss, "r2_score": r2_score}
+        self.test_predictions.append(output)
+        self.test_labels.append(labels)
+        mse_loss = self.mse_loss(output, labels)
+        mae_loss = self.mae_loss(output, labels)
+        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
-        return loss
+        return mse_loss
 
 
 class TransformerEncoderLayer(nn.Module):
