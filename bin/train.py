@@ -1,106 +1,196 @@
-import numpy as np
-import pickle
-from tqdm import tqdm
-
+import os
 import gin
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.nn.modules.loss import MSELoss
-from sklearn.metrics import r2_score
+import pytorch_lightning as L
+import datetime
+from datetime import date
+from pytorch_lightning.loggers import WandbLogger, CSVLogger
+from pytorch_lightning.callbacks import (
+    EarlyStopping,
+    ModelCheckpoint,
+    LearningRateMonitor,
+)
+from pytorch_lightning import LightningModule
 
-from src.model import FgLSTM, FgAttention,  EarlyStopping 
-from src.data_loader import create_dataloader 
-from src.definitions import CONFIGS_DIR, DATA_DIR
+from src.data_loader import CustomDataLoader
+import gin.torch.external_configurables
 
-gin.external_configurable(MSELoss, module="torch.nn")
-gin.external_configurable(optim.Adam, module="torch.optim")
+# For running on cluster - slow connection to wandb
+os.environ["WANDB_INIT_TIMEOUT"] = "1000"
+os.environ["WANDB_HTTP_TIMEOUT"] = "1000"
 
-# Create training function 
-@gin.configurable(denylist=["train_loader", "device", "model"])
-def train(model: torch.nn.Module, optim: torch.optim.Optimizer, loss_func: torch.nn.modules.loss, train_loader, device):
-    model.to(device)
 
-    optimizer = optim(params=model.parameters())
-    criterion = loss_func()
+@gin.configurable
+def main(
+    args,
+    model: LightningModule,
+    data_module: CustomDataLoader,
+    max_epoch: int,
+    early_stopping: bool,
+    patience: int,
+    no_gpus: int,
+    logging: bool,
+    gradient_accum: int,
+):
 
-    # Train the model
-    train_loss = 0
-    model.train()
+    today = date.today()
+    hour = datetime.datetime.now().hour
+    d = today.strftime("%m%d%Y")
+    checkpoint_path = args.checkpoint_path / f"{args.model}-{args.fp}-{d}-{hour}"
+    if not os.path.exists(checkpoint_path):
+        os.mkdir(checkpoint_path)
 
-    for data in train_loader:
-        optimizer.zero_grad()
-        inputs, counts, labels = data["X"], data["c"], data["y"]
-        inputs, counts, labels = inputs.to(device), counts.to(device), labels.to(device)
-        output,perm_idx = model(inputs, counts)
-        labels = labels[perm_idx]
-        output = output.view(-1,1)
-        loss = criterion(output, labels)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-    train_loss /= len(train_loader)
+    # initialize callbacks
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",
+        mode="min",
+        save_top_k=2,
+        dirpath=checkpoint_path,
+        filename="{epoch}-{val_loss:.3f}",
+    )
 
-    return train_loss
+    lr_callback = LearningRateMonitor(logging_interval="step")
 
-@torch.no_grad()
-def validate(model, val_loader, device):
-    model.to(device)
-    model.eval()
-    output_list = []
-    ground_truth = []
-    
-    for data in val_loader:
-        inputs, counts, labels = data["X"], data["c"], data["y"]
-        inputs, counts, labels = inputs.to(device), counts.to(device), labels.to(device)
-        output,perm_idx = model(inputs, counts)
-        labels = labels[perm_idx]
-        output = output.view(-1,1)
-        output_list.extend(output.cpu().numpy())
-        ground_truth.extend(labels.cpu().numpy())
-    output_list = np.array(output_list).reshape(-1,1)
-    ground_truth = np.array(ground_truth).reshape(-1,1)
-    # Calculate R2 score between predicted and true values
-    r2 = r2_score(ground_truth, output_list)
-    return r2
+    if early_stopping:
+        earlystopping_callback = EarlyStopping(
+            monitor="val_loss",
+            mode="min",
+            verbose=True,
+            patience=patience,
+        )
+    else:
+        earlystopping_callback = EarlyStopping(
+            monitor="val_loss", mode="min", patience=max_epoch
+        )
+
+    callbacks = [checkpoint_callback, lr_callback, earlystopping_callback]
+
+    # initialize logger
+    if logging:
+        logger = WandbLogger(
+            project="graphfg",
+            name=f"{args.model}-{args.fp}-{d}-{hour}",
+            log_model="all",
+            save_dir=args.log_path,
+        )
+        logger.watch(model)
+    else:
+        logger = CSVLogger(save_dir=args.log_path)
+
+    if no_gpus > 0:
+        torch.set_float32_matmul_precision("medium")
+        devices = [i for i in range(no_gpus)]
+        trainer = L.Trainer(
+            accelerator="cuda",
+            devices=devices,
+            max_epochs=max_epoch - 1,
+            logger=logger,
+            callbacks=callbacks,
+            gradient_clip_val=1.0,
+            log_every_n_steps=500,
+            accumulate_grad_batches=gradient_accum,
+            enable_progress_bar=True,
+        )
+    else:
+        print("Training resumes on CPU.")
+        trainer = L.Trainer(
+            accelerator="cpu",
+            max_epochs=max_epoch - 1,
+            logger=logger,
+            callbacks=callbacks,
+            gradient_clip_val=1.0,
+            log_every_n_steps=500,
+            enable_progress_bar=False,
+        )
+
+    trainer.fit(
+        model,
+        datamodule=data_module,
+    )
+
+    # within the checkpoint path, put info about the loggers files and the gin config
+    config_info = gin.operative_config_str()
+    loggers_id = logger.version if logging else "version_" + str(logger.version)  # type: ignore
+    # write to new file the config_info and loggers_id
+    with open(checkpoint_path / "config_info.txt", "w") as f:
+        f.write(f"Loggers ID: {loggers_id}")
+        f.write("\n")
+        f.write(config_info)
 
 
 if __name__ == "__main__":
-    # check cuda
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+    import gin
+    import torch
+    from argparse import ArgumentParser
+
+    from src.model import FgLSTM, TransformerEncoder, Fingerprints
+    from src.model_utils import calculate_max_training_step
+    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
+    from src.path_lib import *
+
+    loader_dict = {
+        "LSTM_EFG": EFGLoader,
+        "LSTM_IFG": IFGLoader,
+        "Fingerprint": FPLoader,
+        "Transformer": TFLoader,
+    }
+
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--model",
+        type=str,
+        help="Model to train",
+        required=True,
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
+    )
+    parser.add_argument(
+        "--fingerprint_type",
+        "--fp",
+        dest="fp",
+        type=str,
+        help="Type of fingerprint to use",
+        required=False,
+        choices=["morgan", "rdkit", "atom"],
+        default="morgan",
+    )
+
+    parser.add_argument(
+        "--checkpoint_name",
+        "--cn",
+        dest="cn",
+        type=str,
+        help="Name of the checkpoint file to load",
+        required=False,
+        default=None,
+    )
+
+    args = parser.parse_args()
+    args.checkpoint_path = CHECKPOINT_PATH
+    args.log_path = path / "logs"
+    gin.parse_config_file(GIN_PATH_DATALOADER)
+    gin.bind_parameter("FPLoader.fp_type", args.fp)
+    current_dataset = gin.query_parameter("%df_name").split(".")[0]
+    feature_path = DATA_PATH / "features" / current_dataset
+
+    data_object = loader_dict[args.model]
+    data_module = data_object(
+        data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+    )
+
+    # parse model gin file after data_object has been loaded
+    gin.parse_config_file(GIN_PATH_MODEL)
+    calculate_max_training_step(
+        DATABASE_PATH
+    )  # * Specific to the scheduler used (i.e. OneCycleLR)
+    gin.finalize()
+    model_name = args.model.split("_")[0]
+    model_dict = {
+        "LSTM": FgLSTM,
+        "Transformer": TransformerEncoder,
+        "Fingerprint": Fingerprints,
+    }
+    if isinstance(args.cn, str):
+        model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+        print("Model loaded - training resumes.")
     else:
-        device = torch.device("cpu")
-
-    gin.parse_config_file(CONFIGS_DIR.joinpath("train_configs.gin"))
-
-    model_path = DATA_DIR.joinpath("model_data", "features_EFG_0.7.pkl")
-    vocabs = pickle.load(open(DATA_DIR.joinpath("vocab","vocab_EFG_0.7.pkl"), "rb"))
-    df_mport = pickle.load(open(DATA_DIR.joinpath("mport.pkl"), "rb"))
-    features = pickle.load(open(model_path, "rb"))
-    from collections import Counter
-    feat = [Counter(feat) for feat in features]
-    max_counts = max([max(list(a.values())) for a in feat if len(a) > 0])
-
-    price, smiles = df_mport["price_mmol"].apply(np.log).tolist(), df_mport["smi_can"].tolist()
-    train_loader, valid_loader, _ = create_dataloader(price, smiles, features)
-    model = FgLSTM(input_size=len(vocabs)+2, count_size=max_counts)
-    stopping = EarlyStopping()
-
-    best_val = 0
-
-    for epoch in tqdm(range(100)):
-        train_loss = train(model=model, train_loader=train_loader, device=device)
-        val_r2 = validate(model=model, val_loader=valid_loader, device=device)
-        print(f"Epoch: {epoch}, Train loss: {train_loss}")
-        if val_r2 > best_val:
-            best_val = val_r2
-            torch.save(model.state_dict(), DATA_DIR.joinpath("model_data", "best_model.pt"))
-            print(f"New best model saved with R2 score: {best_val}")
-        
-        if epoch % 5 == 0:
-             print(f"Epoch: {epoch}, Train loss: {train_loss}, Val R2: {val_r2}")
-        
-        if stopping.early_stop(val_r2) and not stopping.deactivate:
-            print("Early stopping")
-            break
+        model = model_dict[model_name](gin.REQUIRED)
+    main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore

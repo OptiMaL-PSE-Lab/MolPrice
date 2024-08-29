@@ -1,315 +1,447 @@
+# pyright: reportAttributeAccessIssue=false
+
+import itertools
+import math as mt
 import os
-import pickle
+import tempfile
+import shutil
 import warnings
 from abc import abstractmethod
-from multiprocessing import Pool, Manager
+from collections import deque
+from multiprocessing import Pool
 from pathlib import Path
+from tqdm import tqdm
+from typing import Optional, Deque, Generator
 
-import gzip
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdMolDescriptors
-from tqdm import tqdm
-
-from src.rdkit_ifg import identify_functional_groups as ifg
-from src.definitions import ROOT_DIR, DATA_DIR
-from EFGs import mol2frag, cleavage
-# Import from data_dist to plot distribution of prices
 
 warnings.filterwarnings("ignore")
 RDLogger.DisableLog("rdApp.*")
 
-columns = [
-    "smi",
-    "smi_can",
-    "id",
-    "inchi",
-    "inchi_key",
-    "iupac",
-    "pubchem",
-    "ver_amount",
-    "unver_amount",
-    "is_sc",
-    "is_bb",
-    "comp_state",
-    "qc_meth",
-    "lead_time",
-    "price_1mg",
-    "price_5mg",
-    "price_50mg",
-    "price_100mg",
-    "price_250mg",
-    "price_1g",
-]
-
-def plot_price_distribution(path_mport: Path):
-    """Plot distribution of prices in mport dataset"""
-    mport = pd.read_pickle(path_mport)
-    old_prices, prices = mport["price_100mg"], mport["price_mmol"]
-    fig,[ax1, ax2] = plt.subplots(nrows=1, ncols=2, figsize=(12, 4))
-    ax1.hist(np.log(prices), bins=100)
-    ax1.set_xlabel('Log Price ($/mmol)')
-    ax1.set_ylabel('Frequency')
-    #ax1.set_xlim((1.5,5))
-    ax2.hist(np.log(old_prices), bins=100)
-    ax2.set_xlabel('Log Price ($/100mg)')
-    ax2.set_ylabel('Frequency')
-    #ax2.set_xlim((2.5,5.5))
-    # Create title for overall figure
-    fig.suptitle('Distribution of Pricing Data')
-    fig.savefig(ROOT_DIR.joinpath("figs", "price_dist.png"))
-    
+ROOT_DIR = Path(__file__).parent.parent
 
 
 class Preprocessing:
-    def __init__(
-        self, colnames: list, data_path: Path, data_smiles: Path, reduce_size: bool
-    ):
-        self.colnames = colnames
+    def __init__(self, data_path: Path):
         self.data_path = data_path
-        self.data_smiles = data_smiles
-        self.reduce_size = reduce_size
-        self.num_workers = os.cpu_count() - 1
-        self.vocab = Manager().dict()
-        self.vocab_path = self.data_path.joinpath("vocab")
-        
-        if not self.data_smiles.exists():
-            self.extract_pubchem() if "pubchem"==self.data_smiles.stem else self.extract_mport()
+        self.num_workers: int = os.cpu_count() - 2  # type: ignore
+        self.chunk_size = self.num_workers * 2
+        self.data_frame: pd.DataFrame
 
-        check_path = self.vocab_path / f"vocab_{type(self).__name__}.pkl"
-        if check_path.exists():
-            with check_path.open("rb") as f:
-                vocab = pickle.load(f)
-                self.vocab.update(vocab)
-        else:
-            self.generate_vocab()
-
-    def _read_file(self, file_path):
-        with gzip.open(file_path, "rb") as f:
-            data = pd.read_csv(
-                f, sep="\t", names=self.colnames, header=None, skiprows=1
-            )
-        return data
-
-    def _range_to_value(self, range_str):
-        split_str = range_str.split()
-        numbers = [float(s) for s in split_str if s.isdigit()]
+    def _canonicalize_and_convert(
+        self, smiles: str, price: float, unit: str, amount: float
+    ) -> tuple[Optional[str], Optional[float]]:
         try:
-            return sum(numbers) / len(numbers)
-        except ZeroDivisionError:
-            return None
-
-    def _canonicalize_and_convert(self, smi, price):
-        mol = Chem.MolFromSmiles(smi)
+            mol = Chem.MolFromSmiles(Chem.MolToSmiles(Chem.MolFromSmiles(smiles)))
+        except:
+            mol = None
         if not mol:
             return (None, None)
-        try:
-            smi = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-            # Do parsing twice as rdkit sometimes fails to produce valid smiles
-            smi = Chem.MolToSmiles(Chem.MolFromSmiles(smi))
-            m_weight = rdMolDescriptors.CalcExactMolWt(mol)
-            # Convert prices from $/100mg to $/mmol
-            price *= np.array(m_weight) / 100
-            return (smi, price)
-        except Exception:
+
+        smi = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+        m_weight = rdMolDescriptors.CalcExactMolWt(mol)
+        m_weight = self._weight_converter(m_weight, amount, unit)
+
+        if m_weight:
+            price *= m_weight / 1e3  # convert to $/mmol
+        else:
             return (None, None)
 
-    def extract_mport(self):
-        mport_path = self.data_path / "mport_data"
-        files = list(mport_path.iterdir())
+        return (smi, price)  # * Price is in $/mmol
+
+    def _weight_converter(
+        self, m_weight: float, amount: float, unit: str
+    ) -> Optional[float]:
+        # m_weight has units of g/mol
+        # check if amount is 0
+        if amount == 0:
+            return None
+
+        unit_converter = {
+            "mg": 1e3,
+            "ml": 1,
+            "g": 1,
+            "ug": 1e6,
+            "micromol": 1e6,
+        }  # * Most important units in database, discard kg and L do to errors in data
+        if unit in unit_converter:
+            m_weight = m_weight * unit_converter[unit] / amount
+        else:
+            return None
+
+        return m_weight
+    
+    @staticmethod
+    def reduce_size(
+        lower_bound: float, df: pd.DataFrame, name: str, data_path: Path
+    ) -> None:
+        """Reduce size of dataframe to a specified price"""
+        df_new = df[df["price_mmol"] > lower_bound]
+        df_new = df_new.drop(df.columns[0], axis=1)
+        df_new.to_csv(data_path / f"{name}_reduced.txt", index=True
+        )
+        print(f"Reduced size of {name} dataset from {df.shape[0]} to {df_new.shape[0]} molecules")
+
+    @staticmethod
+    def plot_price_distribution(price_df: pd.DataFrame, dataset_name: str) -> None:
+        """Plot distribution of prices in single dataset"""
+        prices = price_df["price_mmol"].apply(np.log).values.tolist()
+        weights = np.ones_like(prices) * 100 / len(prices)
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 4), layout="constrained")
+        ax.hist(
+            prices,
+            bins=50,
+            weights=weights,
+            range=(2, max(prices) - 3),
+            color="tab:red",
+            alpha=0.45,
+            edgecolor="k",
+            lw=1,
+        )  # type:ignore
+        ax.set_xlabel(r"log Price $(\$/mmol)$", fontsize=13)
+        ax.set_ylabel(r"Frequency (%)", fontsize=13)
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        # Create title for overall figure
+        fig.savefig(
+            str(ROOT_DIR.joinpath("figs", f"price_dist_{dataset_name}.png")), dpi=600
+        )
+        fig.savefig(
+            str(ROOT_DIR.joinpath("figs", "svgs", f"price_dist_{dataset_name}.svg")),
+            dpi=600,
+        )
+        with open(
+            ROOT_DIR.joinpath("figs", f"price_dist_{dataset_name}.txt"), "w"
+        ) as f:
+            f.write(f"\nTop 50 most expensive molecules in {dataset_name}\n")
+            f.write("-" * 50 + "\n")
+            f.write(
+                str(price_df.nlargest(10000, "price_mmol")[["smi_can", "price_mmol"]])
+                + "\n"
+            )
+            f.write(f"\nTop 50 cheapest molecules in {dataset_name}\n")
+            f.write("-" * 50 + "\n")
+            f.write(
+                str(price_df.nsmallest(50, "price_mmol")[["smi_can", "price_mmol"]])
+                + "\n"
+            )
+            f.write("-" * 50 + "\n")
+
+    @staticmethod
+    def plot_overlap_distribution(price_df: dict[str, pd.DataFrame]) -> None:
+        """Plot overlapping distribution of prices in multiple datasets"""
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 4), layout="constrained")
+        default_colour = [
+            "tab:blue",
+            "tab:orange",
+            "tab:green",
+            "tab:red",
+            "tab:purple",
+        ]
+        for i, (key, df) in enumerate(price_df.items()):
+            prices = df["price_mmol"].apply(np.log).values.tolist()
+            weights = np.ones_like(prices) * 100 / len(prices)
+            ax.hist(
+                prices,
+                bins=50,
+                weights=weights,
+                range=(1, 12),
+                label=key,
+                color=default_colour[i],
+                alpha=0.4,
+                lw=1,
+                edgecolor="black",
+            )  # type:ignore
+
+        ax.set_xlabel(r"log Price $(\$/mmol)$", fontsize=13)
+        ax.set_ylabel(r"Frequency (%)", fontsize=13)
+        ax.legend(fontsize=12, loc="upper left")
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        # Create title for overall figure
+        fig.savefig(str(ROOT_DIR.joinpath("figs", "distribution_overlap.png")))
+        fig.savefig(str(ROOT_DIR.joinpath("figs", "svgs", "distribution_overlap.svg")))
+
+    @abstractmethod
+    def extract_data(self):
+        """
+        To be called by child classes to extract pricing info from the respective datasets
+        """
+        pass
+
+
+class ChemspaceExtractor(Preprocessing):
+    def __init__(self, data_path, csv_name: str, chunk_size: None):
+        super().__init__(data_path)
+        self.csv_name = csv_name
+
+    def extract_data(self):
+        chemspace_path = self.data_path / self.csv_name
+        df_chemspace = pd.read_csv(chemspace_path, sep="\t", header=0)
+        # extract relevant columns of df into four lists of names
+        task = zip(
+            df_chemspace["SMILES"],
+            df_chemspace["Price_EUR"],
+            df_chemspace["Units"],
+            df_chemspace["Pack"],
+        )
         pool = Pool(processes=self.num_workers)
-        all_moles = pool.map(self._read_file, files)
-        df_data = pd.concat(all_moles)
-        df_data = df_data.iloc[:, [1, -3]]
-        df_data = df_data.dropna(subset=["price_100mg"])
-        df_data["price_100mg"] = df_data[["price_100mg"]].applymap(self._range_to_value)
-        print("Only retain smiles that can be read into rdkit:")
-        task = zip(df_data["smi_can"], df_data["price_100mg"])
+
         results = pool.starmap(
             self._canonicalize_and_convert,
-            tqdm(task, total=df_data.shape[0]),
-            chunksize=int(2 * self.num_workers),
+            tqdm(task, total=df_chemspace.shape[0]),
+            chunksize=self.chunk_size,
         )
-        smi, price = zip(*results)
-        df_data["smi_can"] = smi
-        df_data["price_mmol"] = price
-        df_data.dropna(axis=0, how="any", inplace=True)
+        smiles, new_price = zip(*results)
+        df_chemspace["smi_can"] = smiles
+        df_chemspace["price_mmol"] = new_price
+        df_chemspace = df_chemspace.dropna()
+        df_chemspace.to_csv(str(self.data_path / "chemspace_prices.txt"))
+        return df_chemspace
 
-        with self.data_smiles.open("wb") as f:
-            pickle.dump(df_data, f)
 
-    def extract_pubchem(self):
-        pubchem_file = self.data_path / "CID-SMILES.gz"
-        smiles = []
-        print("Extracting smiles from pubchem...")
-        with gzip.open(pubchem_file, "rb") as f:
-            for line in f:
-                line = line.decode("utf-8")
-                contents = line.split()
-                smiles.append(contents[1])
-            print("Finished extracting smiles from pubchem")
-        df_pubchem = pd.DataFrame(smiles, columns=["smi_can"])
-        with self.data_smiles.open("wb") as f:
-            pickle.dump(df_pubchem, f)
+class MolportExtractor(Preprocessing):
+    def __init__(self, data_path, csv_name: str, chunk_size: int = 5000):
+        super().__init__(data_path)
+        self.csv_name = csv_name
+        self.chunk_size = chunk_size
 
-    def generate_vocab(self):
-        smiles_dataset = self.get_smiles()
-        print(f"Generating vocabulary for {type(self).__name__}...")
-        with Pool(processes=self.num_workers) as pool:
-            list(
-                tqdm(
-                    pool.imap(
-                        self.convert_mol_to_frag,
-                        smiles_dataset,
+    def extract_data(self):
+        # * Large datafile with 5M molecules and 110M rows
+        # Expect headers and dtype for df_molport
+        headers = {
+            "MOLECULE_ID": "int32",
+            "CD_SMILES": "str",
+            "PRICEPERUNIT": "float16",
+            "SELLUNIT": "float16",
+            "MEASURE": "category",
+        }
+        temp_dir = tempfile.mkdtemp(dir=self.data_path)
+        molport_path = self.data_path / self.csv_name
+        df_molport = pd.read_csv(
+            molport_path, usecols=list(headers.keys()), dtype=headers
+        )
+        df_molport.dropna(inplace=True)
+        indices = self._get_indices(df_molport)
+
+        print(
+            "Extracting best pricing for each molecule in chunks of {} chunks per iteration".format(
+                self.chunk_size
+            )
+        )
+        i = 0
+        for batch_indices in tqdm(
+            self._batch_indices_generator(indices),
+            total=mt.ceil(len(indices) / self.chunk_size),
+        ):
+
+            tasks = [
+                (
+                    df_molport["CD_SMILES"][start:end].tolist(),
+                    df_molport["PRICEPERUNIT"][start:end].tolist(),
+                    df_molport["MEASURE"][start:end].tolist(),
+                    df_molport["SELLUNIT"][start:end].tolist(),
+                    df_molport["MOLECULE_ID"][start:end].tolist(),
+                )
+                for start, end in batch_indices
+            ]
+
+            with Pool(processes=self.num_workers) as pool:
+                results = list(
+                    pool.starmap(
+                        self._obtain_best_pricing,
+                        tasks,  # task should be a list of tuples of
                         chunksize=5 * self.num_workers,
-                    ),
-                    total=len(smiles_dataset),
+                    )
                 )
+
+            ids, smiles, prices, units = zip(*results)
+            df_new_molport = pd.DataFrame(
+                {
+                    "MOLECULE_ID": ids,
+                    "SMILES": smiles,
+                    "PRICEPERUNIT": prices,
+                    "ORIGINAL_UNIT": units,
+                }
             )
-        if self.reduce_size:
-            if type(self).__name__ == "EFG":
-                # Calculate percentage of vocab that occur at least 2 times in dataset
-                vocab = dict(self.vocab)
-                #res = [(tool, value) for tool, value in vocab.items() if value >= 2]
-                #alpha = len(res) / len(self.vocab)
-                cleavage(vocab, alpha=0.7)
-            else:
-                # This is not encouraged as it will remove a lot of information
-                vocab = {k: v for k, v in self.vocab.items() if v >= 2}
-            
-            self.vocab = Manager().dict()
-            self.vocab.update(vocab)
-
-        pkl_path = self.vocab_path / f"vocab_{type(self).__name__}.pkl"
-        # Convert to normal dict
-        vocab = dict(self.vocab)
-        with pkl_path.open("wb") as f:
-            pickle.dump(vocab, f)
-
-    def create_feature_vec(self):
-        smiles_dataset = self.get_smiles(True)
-        print(f"Creating feature vectors for {type(self).__name__}...")
-        with Pool(processes=self.num_workers) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(
-                        self._create_embeddings,
-                        smiles_dataset,
-                        chunksize=2 * self.num_workers,
-                    ),
-                    total=len(smiles_dataset),
-                )
+            df_new_molport.dropna(inplace=True)
+            ids, smiles, prices, units = (
+                df_new_molport["MOLECULE_ID"],
+                df_new_molport["SMILES"],
+                df_new_molport["PRICEPERUNIT"],
+                df_new_molport["ORIGINAL_UNIT"],
             )
 
-        # results will be 2d list where dim 1 is no smiles and dim 2 is variable length list of indeces
-        # Save list as pickle
-        pkl_path = self.data_path / 'model_data' / f"features_{type(self).__name__}.pkl"
-        with pkl_path.open("wb") as f:
-            pickle.dump(results, f)
+            # write each line of the dataframe to temp text file
+            with open(os.path.join(temp_dir, f"temp_{i}.txt"), "w") as f:
+                for i, s, p, u in zip(ids, smiles, prices, units):
+                    f.write(f"{i},{s},{p}, {u}\n")
 
-    def get_smiles(self, call=False):
-        if self.data_smiles.suffix == ".pkl" or call:
-            with self.data_smiles.open("rb") as f:
-                df_data = pickle.load(f)
-                smi = df_data["smi_can"].tolist()
-                return smi
+            i += 1
+
+        with open(self.data_path / "molport_prices.txt", "w") as outfile:
+            outfile.write("id,smi_can,price_mmol,orig_units\n")
+            for filename in os.listdir(temp_dir):
+                with open(os.path.join(temp_dir, filename), "r") as infile:
+                    outfile.write(infile.read())
+
+        shutil.rmtree(temp_dir)
+
+        self.data_frame = pd.read_csv(self.data_path / "molport_prices.txt")
+
+    def _get_indices(self, df_molport: pd.DataFrame) -> Deque[tuple[int, int]]:
+        # Get indices of molecules with multiple prices
+        count_df = df_molport.groupby("MOLECULE_ID")  # type:ignore
+        count_df = count_df.count()
+        # get indices for same molecules
+        counting_index = -1
+        index_list = deque()
+        print("Obtaining indices for molecules with multiple prices")
+        for i in tqdm(range(len(count_df))):
+            current_index = count_df.iloc[i, 0] + counting_index  # type:ignore
+            index_list.append((counting_index + 1, current_index)) # type:ignore
+            counting_index = current_index
+
+        return index_list
+
+    def _batch_indices_generator(
+        self, indices: Deque[tuple[int, int]]
+    ) -> Generator[list[tuple[int, int]], None, None]:
+        it = iter(indices)
+        while True:
+            batch_indices = list(itertools.islice(it, self.chunk_size))
+            if not batch_indices:
+                return
+            yield batch_indices
+
+    def _obtain_best_pricing(
+        self,
+        smiles: list[str],
+        prices: list[float],
+        units: list[str],
+        amounts: list[float],
+        ids: list[int],
+    ) -> tuple[Optional[int], Optional[str], Optional[float], Optional[str]]:
+        # Obtain best pricing for each molecule
+        incumbant_price = 1e20
+        new_unit = None
+        new_price = None
+
+        for smi, pri, un, am in zip(smiles, prices, units, amounts):
+            smi = smi.split("|")[0]
+            # split smiles based on
+            new_smi, new_price = self._canonicalize_and_convert(smi, pri, un, am)
+            if not new_price:
+                continue
+            elif new_price < incumbant_price:
+                incumbant_price = new_price
+                new_unit = un
+
+        if not new_price:
+            return (None, None, None, None)
         else:
-            df_data = pd.read_csv(self.data_smiles)
-            return df_data["smi_can"].tolist()
-
-    @abstractmethod
-    def _create_embeddings(self):
-        pass
-
-    @abstractmethod
-    def convert_mol_to_frag(self):
-        pass
-
-    @abstractmethod
-    def reduce_vocab_size(self):
-        pass
+            return (
+                ids[0],
+                new_smi,
+                float(incumbant_price),
+                new_unit,
+            )  # * Price is in $/mmol
 
 
-class IFG(Preprocessing):
-    def __init__(
-        self, colnames: list, data_path: Path, data_smiles: Path, reduce_size=False
-    ):
-        super().__init__(colnames, data_path, data_smiles, reduce_size)
-
-    def convert_mol_to_frag(self, smile):
-        mol = Chem.MolFromSmiles(smile)
-        fgs = ifg(mol, smile)
-        for fg in fgs:
-            self.vocab[fg.atoms] = self.vocab.get(fg.atoms, 0) + 1
-
-    def _create_embeddings(self, smile):
-        """ 
-        Returns a list of indeces of positions in vocab
-        """
-        vocab = list(self.vocab().keys())
-        mol = Chem.MolFromSmiles(smile)
-        ifg_list = ifg(mol)
-        atoms = [fg.atoms for fg in ifg_list]
-        indeces = []
-        for atom in atoms:
-            if atom in vocab:
-                idx = vocab.index(atom)
-                indeces.append(idx+1)
-            else:
-                idx = len(vocab)
-                indeces.append(idx+1)
-
-        return indeces
-
-
-class EFG(Preprocessing):
-    def __init__(
-        self, colnames: list, data_path: Path, data_smiles: Path, reduce_size=False
-    ):
-        super().__init__(colnames, data_path, data_smiles, reduce_size)
-
-    def convert_mol_to_frag(self, smile):
-        try:
-            mol = Chem.MolFromSmiles(smile)
-            a, b = mol2frag(mol)
-            vocab_update = {}
-            for elem in a + b:
-                vocab_update[elem] = self.vocab.get(elem, 0) + 1
-            self.vocab.update(vocab_update)
-        except:
-            pass
-            # These are errors with the efg algorithm rather than rdkit
-    
-    def _create_embeddings(self, smile):
-       try: 
-            vocab = list(self.vocab.keys())
-            indeces = []
-            mol = Chem.MolFromSmiles(smile)
-            extra = {}
-            a, b = mol2frag(mol, toEnd=True, vocabulary=list(vocab), extra_included=True, extra_backup=extra)
-            backup_vocab = list(extra.values())
-            atoms = a + b + backup_vocab
-            for atom in atoms:
-                if atom in vocab:
-                    idx = vocab.index(atom)
-                    indeces.append(idx+1)
-                else:
-                    idx = len(vocab)
-                    indeces.append(idx+1)
-            return indeces
-       except:
-           # These are errors with the efg algorithm rather than rdkit
-           return []
-
-
+# run extract chemspace
 if __name__ == "__main__":
-    #efg = EFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", True)
-    #efg.create_feature_vec()
+    from argparse import ArgumentParser
 
-    ifg = IFG(columns, DATA_DIR, DATA_DIR / "mport.pkl", False)
-    ifg.create_feature_vec()
+    DEFAULT_TASK = "extract"
+    DEFAULT_DATA_DIR = "data/databases"
+    DEFAULT_CHUNK_SIZE = 25000
+    DEFAULT_DATASETS = ["chemspace_data.smiles", "molport_data.smiles"]
+    DEFAULT_PRICE_THRESHOLD = 2
+
+    arg_parser = ArgumentParser()
+    arg_parser.add_argument(
+        "--data_dir",
+        type=str,
+        help="Path to data file from root directory",
+        default=DEFAULT_DATA_DIR,
+    )
+    arg_parser.add_argument(
+        "--task",
+        type=str,
+        choices=["extract", "plot", "reduce"],
+        help="Whether to plot the data distribution, extract data from database or reduce size of existing dataset",
+        default=DEFAULT_TASK,
+    )
+    arg_parser.add_argument(
+        "--dataset",
+        help="Name of dataset to extract data from e.g. chemspace.smiles",
+        nargs="+",
+        default=DEFAULT_DATASETS,
+    )
+    arg_parser.add_argument(
+        "--price_threshold","--pt", type=float, default=DEFAULT_PRICE_THRESHOLD
+    )
+    arg_parser.add_argument(
+        "--chunk_size",
+        type=int,
+        help="Chunk size for processing data",
+        default=DEFAULT_CHUNK_SIZE,
+    )
+    args = arg_parser.parse_args()
+
+    avaiable_extractors = {"chem": ChemspaceExtractor, "molp": MolportExtractor}
+    data_path = ROOT_DIR.joinpath(args.data_dir)
+
+    if args.task == "extract":
+        print("Extracting data from database(s)...")
+        def check_extractor(dataset: str) -> None:
+            if dataset[:4] not in avaiable_extractors:
+                raise ValueError(f"Dataset Extractor {args.dataset} not available")
+
+        if len(args.dataset) > 1:
+            for db in args.dataset:
+                check_extractor(db)
+                extractor = avaiable_extractors[db[:4]](data_path, db, args.chunk_size)
+                extractor.extract_data()
+        else:
+            db = args.dataset[0]
+            check_extractor(db)
+            extractor = avaiable_extractors[db[:4]](
+                data_path, db, args.chunk_size
+            )
+            extractor.extract_data()
+
+    elif args.task == "plot":
+        print("Plotting price distribution(s)...")
+        if len(args.dataset) > 1:
+            for i, db in enumerate(args.dataset):
+                db_name = db.split("_")[0]
+                df_i = pd.read_csv(data_path / db)
+                Preprocessing.plot_price_distribution(df_i, db_name)
+
+            Preprocessing.plot_overlap_distribution(
+                {db.split("_")[0]: pd.read_csv(data_path / db) for db in args.dataset}
+            )
+        else:
+            db = args.dataset[0]
+            df = pd.read_csv(data_path / db)
+            Preprocessing.plot_price_distribution(df, db.split("_")[0])
     
-    # Plot price distribution
-    #plot_price_distribution(DATA_DIR / "mport.pkl")
+    elif args.task == "reduce":
+        print("Reducing size of dataset(s)...")
+        if len(args.dataset) > 1:
+            for db in args.dataset:
+                df = pd.read_csv(data_path / db)
+                Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)
+        else:
+            db = args.dataset[0]
+            df = pd.read_csv(data_path / db)
+            Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)

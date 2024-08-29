@@ -1,3 +1,4 @@
+# type: ignore
 #
 #  Original authors: Richard Hall and Guillaume Godin
 #  This file is part of the RDKit.

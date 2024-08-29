@@ -1,72 +1,182 @@
-import numpy as np
-import pickle
+import os
+from typing import Union
 
 import gin
-import matplotlib.pyplot as plt
 import torch
-import torch.optim as optim
-from torch.nn.modules.loss import MSELoss
-from sklearn.metrics import r2_score
+import numpy as np
+import pytorch_lightning as L
+from pytorch_lightning import LightningModule, LightningDataModule
+from pytorch_lightning.accelerators import find_usable_cuda_devices  # type: ignore
 
-from src.model import FgLSTM
-from src.data_loader import create_dataloader 
-from src.definitions import DATA_DIR, CONFIGS_DIR
+from src.plotter import plot_parity, plot_dist_overlap
+from src.data_loader import TestLoader
+from src.path_lib import *
 
 
-@torch.no_grad()
-def test(model, test_loader, device):
-    model.to(device)
-    model.eval()
-    predictions = []
-    ground_truth = []
-    
-    for data in test_loader:
-        inputs, labels = data["X"], data["y"]
-        inputs, labels = inputs.to(device), labels.to(device)
-        output, perm_idx = model(inputs)
-        labels = labels[perm_idx]
-        output = output.view(-1,1)
-        predictions.extend(output.cpu().numpy())
-        ground_truth.extend(labels.cpu().numpy())
-    predictions = np.array(predictions).reshape(-1,1)
-    ground_truth = np.array(ground_truth).reshape(-1,1)
-    return ground_truth, predictions
+def main_data_test(
+    args,
+    model: LightningModule,
+    loader: LightningDataModule,
+):
+
+    loaded_model = model.load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+    trainer = L.Trainer(
+        accelerator="auto", devices=find_usable_cuda_devices(), logger=False
+    )
+
+    out = trainer.test(loaded_model, loader.test_dataloader())
+    # write out to CONFIG_PATH with new line between each metric
+    with open(CONFIG_PATH / "test_results.txt", "w") as f:
+        for metric in out:
+            f.write(f"{metric}\n")
+    print(out)
+
+    if args.plot:
+        labels, logits = loaded_model.test_predictions, loaded_model.test_labels
+        r2_score = out[-1]["r2_score"]
+        labels_np = np.concatenate([label.cpu().numpy() for label in labels], axis=0)  # type: ignore
+        logits_np = np.concatenate([logit.cpu().numpy() for logit in logits], axis=0)  # type: ignore
+        fig = plot_parity(logits_np, labels_np, r2_score)
+        fig.savefig(CONFIG_PATH / "parity.png", dpi=300)
+
+
+def main_ood_test(
+    args,
+    model: LightningModule,
+    loader: Union[LightningDataModule, list[LightningDataModule]],
+):
+
+    loaded_model = model.load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+    trainer = L.Trainer(
+        accelerator="auto", devices=find_usable_cuda_devices(), logger=False
+    )
+    if isinstance(loader, list):
+        test_name = args.test_name.split(",")
+        outputs = {}
+        for i, load in enumerate(loader):
+            t_name = test_name[i].split("/")[-1]
+            out = trainer.predict(loaded_model, load.test_dataloader())
+            outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
+    else:
+        t_name = args.test_name.split("/")[-1]
+        out = trainer.predict(loaded_model, loader.test_dataloader())
+        outputs[f"{t_name}"] = torch.cat(out).numpy()  # type: ignore
+
+    if args.plot:
+        fig = plot_dist_overlap(outputs)
+        fig.savefig(CONFIG_PATH / "dist_overlap.png", dpi=300)
+
+
+def add_shared_arguments(parser):
+    """Function to add shared arguments to a parser."""
+    parser.add_argument(
+        "--checkpoint_name",
+        "--cn",
+        dest="cn",
+        type=str,
+        help="Name of the checkpoint file to load",
+        required=True,
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        help="Model to test",
+        required=True,
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
+    )
+
+    parser.add_argument(
+        "--fingerprint_type",
+        "--fp",
+        dest="fp",
+        type=str,
+        help="Type of fingerprint to use",
+        required=False,
+        choices=["morgan", "rdkit", "atom"],
+        default="morgan",
+    )
+
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Whether to plot the parity plot",
+    )
 
 
 if __name__ == "__main__":
-    # check cuda
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+    import argparse
+
+    from src.model import FgLSTM, TransformerEncoder, Fingerprints
+    from src.data_loader import TestLoader
+
+    model_dict = {
+        "FgLSTM": FgLSTM,
+        "Transformer": TransformerEncoder,
+        "Fingerprint": Fingerprints,
+    }
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+
+    data_parser = subparsers.add_parser("main_data")
+    add_shared_arguments(data_parser)
+    data_parser.add_argument("--has_price", action="store_false")
+    data_parser.add_argument(
+        "--test_name",
+        type=str,
+        help="Name of the test file within ./testing",
+        required=True,
+    )
+    data_parser.set_defaults(func=main_data_test)
+
+    ood_parser = subparsers.add_parser("main_ood")
+    add_shared_arguments(ood_parser)
+    ood_parser.add_argument("--has_price", action="store_true")
+    ood_parser.add_argument(
+        "--test_name",
+        type=str,
+        help="Name of the test file(s) within ./testing, separated by comma",
+        required=True,
+    )
+    ood_parser.set_defaults(func=main_ood_test)
+
+    args = parser.parse_args()
+
+    model = model_dict[args.model]
+
+    test_paths = args.test_name.split(",")
+    if len(test_paths) > 1:
+        test_loader = [
+            TestLoader(
+                TEST_PATH / test,
+                DATA_PATH,
+                128,
+                model_name=args.model,
+                has_price=args.has_price,
+            )
+            for test in test_paths
+        ]
     else:
-        device = torch.device("cpu")
-    
-    gin.parse_config_file(CONFIGS_DIR.joinpath("test_configs.gin"))
+        test_loader = TestLoader(
+            TEST_PATH / args.test_name,
+            DATA_PATH,
+            128,
+            model_name=args.model,
+            has_price=args.has_price,
+        )
 
-    model_path = DATA_DIR.joinpath("model_data", "features_EFG.pkl")
-    vocabs = pickle.load(open(DATA_DIR.joinpath("vocab","vocab_EFG.pkl"), "rb"))
-    df_mport = pickle.load(open(DATA_DIR.joinpath("mport.pkl"), "rb"))
-    features = pickle.load(open(model_path, "rb"))
+    # read gin file
+    CONFIG_PATH = CHECKPOINT_PATH.joinpath(args.cn).parent
 
-    price, smiles = df_mport["price_mmol"].apply(np.log).tolist(), df_mport["smi_can"].tolist()
-    _, _, test_loader = create_dataloader(price, smiles, features)
-    
-    # Load model from checkpoint
-    model_path = DATA_DIR.joinpath("model_data", "best_model.pt")
-    model = FgLSTM(input_size=len(vocabs)+2, count_size=2)
-    model.load_state_dict(torch.load(model_path))
-    ground_truth, predictions = test(model, test_loader, device)
+    # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
+    with open(CONFIG_PATH / "config_info.txt", "r") as f:
+        lines = f.readlines()
+    str_to_add = "import bin.train\nimport src.model\nimport src.data_loader\n"
+    with open(CONFIG_PATH / "config_temp.txt", "w") as f:
+        f.writelines(str_to_add)
+        f.writelines(lines[1:])
+    config_name = str(CONFIG_PATH / "config_temp.txt")
+    gin.parse_config_file(config_name)
+    os.remove(config_name)
 
-    # Calculate R2 score between predicted and true values
-    r2 = r2_score(ground_truth, predictions)
-    
-    # Scatter plot of predicted vs true values with heatmap of density and R2 score in legend
-    plt.figure(figsize=(8,6))
-    plt.hexbin(ground_truth, predictions, gridsize=100, cmap="viridis", bins="log")
-    plt.colorbar()
-    plt.xlabel("True values")
-    plt.ylabel("Predicted values")
-    plt.title("Predicted vs True values")
-    min_val, max_val = np.min([ground_truth, predictions]), np.max([ground_truth, predictions])
-    plt.plot([min_val, max_val], [min_val, max_val],color='black')
-    plt.legend(["R2 score: {:.3f}".format(r2)])
-    plt.show()
+    args.func(args, model, test_loader)
