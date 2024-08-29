@@ -2,14 +2,11 @@ import gin
 import math
 import re
 import os
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
 from multiprocessing import Pool
-from pytorch_lightning.callbacks import Callback
 
 
 class Tokenizer:

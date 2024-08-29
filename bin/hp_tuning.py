@@ -70,7 +70,10 @@ def objective(trial: optuna.trial.Trial) -> float:
         hidden_size_1=hidden_dim_1,
         hidden_size_2=hidden_dim_2,
         hidden_size_3=hidden_dim_3,
+        latent_size=1,
         dropout=dropout,
+        loss_hp=False, 
+        loss_sep=False
     )
     gin.parse_config_file(GIN_PATH_TUNING)
     gin.bind_parameter("torch.optim.Adam.lr", lr)

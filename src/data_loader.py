@@ -23,33 +23,7 @@ from scipy.sparse import csr_matrix
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
 from src.model_utils import Tokenizer
-
-
-class FGDataset(Dataset):
-    def __init__(
-        self,
-        price: FloatTensor,
-        features: LongTensor | csr_matrix,
-        counts: Optional[LongTensor],
-    ):
-        # * Features/counts are stored as sparse matrix | list[LongTensor]
-
-        self.price = price
-        self.features = features
-        self.counts = counts
-
-    def __len__(self):
-        return len(self.price)
-
-    def __getitem__(self, idx):
-        if self.counts is None:
-            return {"X": self.features[idx], "y": self.price[idx]}
-        else:
-            return {
-                "X": self.features[idx],
-                "y": self.price[idx],
-                "c": self.counts[idx],
-            }
+from src.datasets import FGDataset, CombinedDataset
 
 
 class CustomDataLoader(LightningDataModule):
@@ -80,6 +54,8 @@ class CustomDataLoader(LightningDataModule):
         self.test_data: Subset
 
         self.dataframe: Path = self.data_path / df_name
+        self.augment = False  # this is overwritten in TFLoader
+        self.vocab_path: Path
 
     def prepare_data(self):
         if not self.pickle_path.exists() and not self.hp_tuning:
@@ -92,9 +68,17 @@ class CustomDataLoader(LightningDataModule):
             pass
 
     def setup(self, stage: str) -> None:
-        self.mydataset = FGDataset(*self.load_features())
+        smiles = self.get_smiles() if self.augment else None
+        self.price_dataset = FGDataset(
+            *self.load_features(),
+            smiles=smiles,
+            vocab_path=self.vocab_path,
+            augment=self.augment,
+        )
         self.train_data, self.val_data, self.test_data = random_split(
-            self.mydataset, self.data_split, generator=torch.Generator().manual_seed(42)
+            self.price_dataset,
+            self.data_split,
+            generator=torch.Generator().manual_seed(42),
         )
         if type(self).__name__ == "TFLoader":
             # sort data in train_data by length and shuffle indices for faster training due to different lengths
@@ -600,6 +584,7 @@ class TFLoader(CustomDataLoader):
         data_split,
         df_name,
         hp_tuning,
+        augment,
     ) -> None:
         pickle_path = feature_path / "features_TF.pkl.npz"
         super().__init__(
@@ -616,6 +601,7 @@ class TFLoader(CustomDataLoader):
         self.vocab_path = (
             data_path.parent / "vocab" / df_name.split(".")[0] / "vocab_SMILES.txt"
         )
+        self.augment = augment
 
     def generate_features(self):
         print("Creating features for Tokenized SMILES")
@@ -631,7 +617,7 @@ class TFLoader(CustomDataLoader):
                 for token in vocab.keys():
                     f.write(f"{token}\n")
         else:
-            tokenizer.load_vocab(self.vocab_path)
+            tokenizer.load_vocab(str(self.vocab_path))
         del smiles
         print("Encoding tokens...")
         encoded = tokenizer.encode(
@@ -812,6 +798,84 @@ class TestLoader(LightningDataModule):
     def get_smiles(self) -> list[str]:
         df = pd.read_csv(self.test_file)
         return df["smi_can"].to_list()
+
+
+class CombinedLoader(LightningDataModule):
+    """
+    This loader takes in two loaders and combines their data into one dataloader using the CombinedDataset
+    """
+
+    def __init__(self, loader_1: CustomDataLoader, loader_2: CustomDataLoader) -> None:
+        super().__init__()
+        self.loader_1 = loader_1
+        self.loader_2 = loader_2
+        self.loaders = [self.loader_1, self.loader_2]
+        # check if loaders are of same class
+        if type(self.loader_1) != type(self.loader_2):
+            raise ValueError("Loaders must be of same class")
+
+        self.train_dataset: Subset
+        self.val_dataset: Subset
+        self.test_dataset: Subset
+
+    def prepare_data(self):
+        for loader in self.loaders:
+            if not loader.pickle_path.exists():
+                loader.feature_path.mkdir(parents=True, exist_ok=True)
+                loader.generate_features()
+            else:
+                pass
+
+    def setup(self):
+        train_list, val_list, test_list = [], [], []
+        for loader in self.loaders:
+            smiles = loader.get_smiles() if loader.augment else None
+            dataset = FGDataset(
+                *loader.load_features(),
+                smiles=smiles,
+                vocab_path=loader.vocab_path,
+                augment=loader.augment,
+            )
+            train_data, val_data, test_data = random_split(
+                dataset, loader.data_split, generator=torch.Generator().manual_seed(42)
+            )
+            if type(loader).__name__ == "TFLoader":
+                # sort data in train_data by length and shuffle indices for faster training due to different lengths
+                indices = sorted(
+                    range(len(train_data)),
+                    key=lambda x: len(train_data[x]["X"]),
+                    reverse=True,
+                )
+                # shuffle indices according to batch_size
+                indices_groups = [
+                    indices[i : i + loader.batch_size]
+                    for i in range(0, len(indices), loader.batch_size)
+                ]
+                last_group = indices_groups.pop()
+                new_indices = [
+                    item
+                    for sublist in np.random.permutation(indices_groups)
+                    for item in sublist
+                ]
+                new_indices.extend(last_group)
+                train_data = Subset(train_data, new_indices)
+
+            train_list.append(train_data)
+            val_list.append(val_data)
+            test_list.append(test_data)
+
+        train_data = CombinedDataset(*train_list)
+        val_data = CombinedDataset(*val_list)
+        test_data = CombinedDataset(*test_list)
+
+    def train_dataloader(self) -> DataLoader:
+        return self.loader_1.train_dataloader()
+
+    def val_dataloader(self) -> DataLoader:
+        return self.loader_1.val_dataloader()
+
+    def test_dataloader(self) -> DataLoader:
+        return self.loader_1.test_dataloader()
 
 
 if __name__ == "__main__":

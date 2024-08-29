@@ -8,49 +8,51 @@ main.early_stopping = True
 main.patience = 20
 main.no_gpus = 1
 main.logging = True
-main.gradient_accum = 1
+main.gradient_accum = 2
 
 # Model Hyperparameters
 
 # Constants 
-optimizer = @torch.optim.Adam
 lr = 1e-4
-weight_decay=1e-5
+weight_decay=5e-6
 
 
 # input and count size are max values for the embedding layer
 LSTM.input_size = 7000
 LSTM.count_size = 100
-LSTM.embedding_size = 100
-LSTM.hidden_lstm = 100
-LSTM.hidden1_nn = 100
-LSTM.hidden2_nn = 50
+LSTM.embedding_size = 200
+LSTM.hidden_lstm = 200
+LSTM.hidden1_nn = 50
+LSTM.hidden2_nn = 10
 LSTM.output_size = 1
 LSTM.lstm_size = 3
 LSTM.dropout = 0.1
-LSTM.configure_optimizers.optimizer = %optimizer
+LSTM.configure_optimizers.optimizer = @lstm/torch.optim.Adam
 lstm/torch.optim.Adam.lr = %lr
 lstm/torch.optim.Adam.weight_decay = %weight_decay
 
 FP.input_size = %fp_size
-FP.hidden_size_1 = 500
-FP.hidden_size_2 = 350
-FP.hidden_size_3 = 200
-FP.dropout = 0.1
-FP.configure_optimizers.optimizer = %optimizer
+FP.hidden_size_1 = 1024
+FP.hidden_size_2 = 256
+FP.hidden_size_3 = 124
+FP.dropout = 0.25
+FP.loss_hp = 0.3
+FP.loss_sep = True
+FP.configure_optimizers.optimizer = @fp/torch.optim.Adam
 fp/torch.optim.Adam.lr = %lr
+fp/torch.optim.Adam.weight_decay = 0
 
 # again, transformer input size is a max value for the embedding
 lr_tf = 5e-5
-Transformer.input_size = 700
+Transformer.input_size = 500
 Transformer.embedding_size = 320
 Transformer.num_heads = 8
-Transformer.hidden_size = 600
-Transformer.num_layers = 3
-Transformer.dropout = 0.1
+Transformer.hidden_size = 512
+Transformer.num_layers = 2
+Transformer.dropout = 0.25
 Transformer.configure_optimizers.optimizer = @transformer/torch.optim.AdamW
 transformer/torch.optim.AdamW.lr = %lr_tf
-transformer/torch.optim.AdamW.weight_decay = 1e-10
+transformer/torch.optim.AdamW.weight_decay = %weight_decay
 Transformer.configure_optimizers.scheduler = @transformer/torch.optim.lr_scheduler.OneCycleLR
 transformer/torch.optim.lr_scheduler.OneCycleLR.max_lr = %lr_tf
 transformer/torch.optim.lr_scheduler.OneCycleLR.pct_start = 0.25
