@@ -225,7 +225,10 @@ class Fingerprints(CustomModule):
         hidden_size_1: int,
         hidden_size_2: int,
         hidden_size_3: int,
+        latent_size: int,
         dropout: float,
+        loss_hp: float,
+        loss_sep: bool,
     ):
         super(Fingerprints, self).__init__()
         self.neural_network = nn.Sequential(
@@ -238,13 +241,39 @@ class Fingerprints(CustomModule):
             nn.Linear(hidden_size_2, hidden_size_3),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size_3, 1),
         )
+        self.linear = nn.Linear(hidden_size_3, 1)
+        self.latent_mu = nn.Linear(hidden_size_3, latent_size)
+        self.latent_sigma = nn.Linear(hidden_size_3, latent_size)
+        self.loss_hp = loss_hp
+        self.loss_sep = loss_sep
         self.save_hyperparameters()  #! Comment line for hp_tuning
 
     def forward(self, x):
         x = self.neural_network(x)
+        x = self.linear(x)
         return x
+
+    def forward_sep(self, x):
+        x = self.neural_network(x)
+        mu = self.latent_mu(x)
+        sigma = self.latent_sigma(x)
+        z = self.reparametrize(mu, sigma)
+        x = self.linear(x)
+        return x, z
+
+    def reparametrize(self, mu, sigma):
+        std = torch.exp(0.5 * sigma)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def approx_gaussian(
+        self, hs_z: torch.Tensor, es_z: torch.Tensor
+    ) -> list[torch.Tensor]:
+        # batch first so z has shape (N_batch, latent_size)
+        hs_mu, hs_sigma = hs_z.mean(dim=0), hs_z.std(dim=0)
+        es_mu, es_sigma = es_z.mean(dim=0), es_z.std(dim=0)
+        return [hs_mu, hs_sigma, es_mu, es_sigma]
 
     @gin.configurable(module="FP")  # type: ignore
     def configure_optimizers(
@@ -253,11 +282,46 @@ class Fingerprints(CustomModule):
         opt = optimizer(self.parameters())  # type: ignore
         return opt
 
+    def pdf_separation(self, hs_mu, hs_sigma, es_mu, es_sigma):
+        # get a measure of separation between distribution via hellinger distance
+        # * distance assumes diagonal covariance matrices
+        first_term = torch.sqrt((2 * hs_sigma * es_sigma) / (hs_sigma**2 + es_sigma**2))
+        second_term = torch.exp(
+            -0.25 * (hs_mu - es_mu) ** 2 / (hs_sigma**2 + es_sigma**2)
+        )
+        hell_distance = torch.sqrt(1 - torch.prod(first_term * second_term))
+        return hell_distance
+
+    def loss_function(self, z, out, labels):
+        # first half of data is es_z and second half is hs_z
+        es_z, hs_z = z.chunk(2, dim=0)
+        es_out, _ = out.chunk(2, dim=0)
+        if hs_z != es_z:
+            raise ValueError("z is not split correctly")
+        hs_mu, hs_sigma, es_mu, es_sigma = self.approx_gaussian(hs_z, es_z)
+        hell_distance = self.pdf_separation(hs_mu, hs_sigma, es_mu, es_sigma)
+        mse_loss = self.mse_loss(es_out, labels)
+        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * (1 - hell_distance)
+        return total_loss, mse_loss, hell_distance
+
     def training_step(self, batch, batch_idx):
-        inputs, labels = batch["X"], batch["y"]
-        output = self.forward(inputs)
+        labels = batch["y"]
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)
+        if self.loss_sep:
+            inputs, hs_input = batch["X"], batch["X_small"]
+            inputs = torch.cat((inputs, hs_input), dim=0)
+            output, z = self.forward_sep(inputs)
+            loss, mse_loss, hell_loss = self.loss_function(z, output, labels)
+            self.log_dict(
+                {"hellinger_distance": hell_loss, "mse_loss": mse_loss},
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        else:
+            inputs = batch["X"]
+            output = self.forward(inputs)
+            loss = self.mse_loss(output, labels)
         self.log(
             "train_loss",
             loss,
@@ -269,10 +333,24 @@ class Fingerprints(CustomModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        inputs, labels = batch["X"], batch["y"]
-        output = self.forward(inputs)
+        labels = batch["y"]
         labels = labels.view(-1, 1)
-        loss = self.mse_loss(output, labels)
+        if self.loss_sep:
+            inputs, hs_input = batch["X"], batch["X_small"]
+            inputs = torch.cat((inputs, hs_input), dim=0)
+            output, z = self.forward_sep(inputs)
+            loss, mse_loss, hell_loss = self.loss_function(z, output, labels)
+            self.log_dict(
+                {"hellinger_distance": hell_loss, "mse_loss": mse_loss},
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        else:
+            inputs = batch["X"]
+            output = self.forward(inputs)
+            loss = self.mse_loss(output, labels)
+
         r2_score = self.r2_score(output, labels)
         if wandb.run:
             if self.trainer.global_step == 0:
@@ -284,6 +362,7 @@ class Fingerprints(CustomModule):
         return loss
 
     def test_step(self, batch, batch_idx):
+        #! yet to update
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
@@ -320,6 +399,10 @@ class TransformerEncoder(CustomModule):
         )
         self.fc = nn.Linear(embedding_size, 1)
         self.save_hyperparameters(ignore="input_size")
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.embedding.weight)
+        nn.init.xavier_uniform_(self.fc.weight)
 
     def forward(self, x) -> torch.Tensor:
         embedded = self.embedding(
@@ -365,6 +448,11 @@ class TransformerEncoder(CustomModule):
 
     def training_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
+        if batch["X_aug"]:  # possible augmentation in batch
+            inp_extra = batch["X_aug"]
+            price_extra = batch["y_aug"]
+            inputs = torch.cat((inputs, inp_extra), dim=0)
+            labels = torch.cat((labels, price_extra), dim=0)
         # use model to get output
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
