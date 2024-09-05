@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
     from src.model_utils import calculate_max_training_step
-    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
+    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, CombinedLoader
     from src.path_lib import *
 
     loader_dict = {
@@ -163,6 +163,12 @@ if __name__ == "__main__":
         default=None,
     )
 
+    parser.add_argument(
+        "--combined",
+        action="store_true",
+        help="Whether to use combined dataloaders to train via multitask learning",
+    )
+
     args = parser.parse_args()
     args.checkpoint_path = CHECKPOINT_PATH
     args.log_path = path / "logs"
@@ -175,8 +181,17 @@ if __name__ == "__main__":
     data_module = data_object(
         data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
     )
-
-    #! Do something here for the combined dataloaders
+    
+    if args.combined:
+        print("Using combined dataload. Only implemented for FP models for now.")
+        # for now default dataset given by GASA for HS
+        del data_module 
+        feature_path = DATA_PATH / "features" / "test"
+        es_dataloader = data_object(data_path = DATABASE_PATH, feature_path = feature_path, hp_tuning = False)
+        hs_path = TEST_PATH / "gasa"
+        hs_dataloader = data_object(data_path = hs_path, feature_path = hs_path, hp_tuning = False, df_name = "test_hs.csv")
+        data_module = CombinedLoader(es_dataloader, hs_dataloader)
+        gin.constant("loss_sep", True)
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(GIN_PATH_MODEL)

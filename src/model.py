@@ -295,21 +295,22 @@ class Fingerprints(CustomModule):
     def loss_function(self, z, out, labels):
         # first half of data is es_z and second half is hs_z
         es_z, hs_z = z.chunk(2, dim=0)
-        es_out, _ = out.chunk(2, dim=0)
-        if hs_z != es_z:
+        es_label, _ = labels.chunk(2, dim=0)
+        es_out, hs_out = out.chunk(2, dim=0)
+        if hs_z.shape[1] != es_z.shape[1]:
             raise ValueError("z is not split correctly")
         hs_mu, hs_sigma, es_mu, es_sigma = self.approx_gaussian(hs_z, es_z)
         hell_distance = self.pdf_separation(hs_mu, hs_sigma, es_mu, es_sigma)
-        mse_loss = self.mse_loss(es_out, labels)
-        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * (1 - hell_distance)
+        kl_div = 0.5*torch.sum((hs_sigma**2 + hs_mu**2 - 1 - torch.log(hs_sigma**2) + es_sigma**2 + es_mu**2 - 1 - torch.log(es_sigma**2)))
+        mse_loss = self.mse_loss(es_out, es_label)
+        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * (1 - hell_distance) + 0.05*kl_div
         return total_loss, mse_loss, hell_distance
 
     def training_step(self, batch, batch_idx):
         labels = batch["y"]
+        inputs = batch["X"]
         labels = labels.view(-1, 1)
         if self.loss_sep:
-            inputs, hs_input = batch["X"], batch["X_small"]
-            inputs = torch.cat((inputs, hs_input), dim=0)
             output, z = self.forward_sep(inputs)
             loss, mse_loss, hell_loss = self.loss_function(z, output, labels)
             self.log_dict(
@@ -319,7 +320,6 @@ class Fingerprints(CustomModule):
                 sync_dist=True,
             )
         else:
-            inputs = batch["X"]
             output = self.forward(inputs)
             loss = self.mse_loss(output, labels)
         self.log(
@@ -334,18 +334,19 @@ class Fingerprints(CustomModule):
 
     def validation_step(self, batch, batch_idx):
         labels = batch["y"]
+        inputs = batch["X"]
         labels = labels.view(-1, 1)
         if self.loss_sep:
-            inputs, hs_input = batch["X"], batch["X_small"]
-            inputs = torch.cat((inputs, hs_input), dim=0)
             output, z = self.forward_sep(inputs)
             loss, mse_loss, hell_loss = self.loss_function(z, output, labels)
             self.log_dict(
-                {"hellinger_distance": hell_loss, "mse_loss": mse_loss},
-                on_step=True,
+                {"val_hellinger_distance": hell_loss, "val_mse_loss": mse_loss},
+                on_step=False,
                 on_epoch=True,
                 sync_dist=True,
             )
+            output, _ = output.chunk(2, dim=0)
+            labels, _ = labels.chunk(2, dim=0)
         else:
             inputs = batch["X"]
             output = self.forward(inputs)

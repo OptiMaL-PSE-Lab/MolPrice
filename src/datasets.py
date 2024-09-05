@@ -4,8 +4,8 @@ from typing import Optional
 import torch
 from rdkit import Chem
 from torch import LongTensor, FloatTensor
-from torch.utils.data import Dataset
-from scipy.sparse import csr_matrix
+from torch.utils.data import Dataset, Subset
+from scipy.sparse import csr_matrix, vstack
 from src.model_utils import Tokenizer
 
 
@@ -68,8 +68,8 @@ class FGDataset(Dataset):
 class CombinedDataset(Dataset):
     def __init__(
         self,
-        dataset_1: FGDataset,
-        dataset_2: FGDataset,
+        dataset_1: Subset[FGDataset],
+        dataset_2: Subset[FGDataset],
     ):
         self.larger_dataset = (
             dataset_1 if len(dataset_1) > len(dataset_2) else dataset_2
@@ -79,9 +79,14 @@ class CombinedDataset(Dataset):
         )
         self.combined_length = len(self.larger_dataset)
         self.small_length = len(self.smaller_dataset)
-        if self.larger_dataset.augment or self.smaller_dataset.augment:
+        
+        # Access the underlying datasets
+        larger_dataset_underlying = self.larger_dataset.dataset
+        smaller_dataset_underlying = self.smaller_dataset.dataset
+        
+        if getattr(larger_dataset_underlying, 'augment', False) or getattr(smaller_dataset_underlying, 'augment', False):
             raise ValueError("Augmentation is not supported for combined datasets")
-        if self.larger_dataset.counts is not None:
+        if getattr(larger_dataset_underlying, 'counts', None) is not None:
             raise ValueError("Counts are not supported for combined datasets")
 
     def __len__(self):
@@ -89,12 +94,19 @@ class CombinedDataset(Dataset):
 
     def __getitem__(self, idx):
         large_data_point = self.larger_dataset[idx]
-        small_data_point = self.smaller_dataset[idx % self.small_length]
+        small_idx = [i % self.small_length for i in idx]
+        small_data_point = self.smaller_dataset[small_idx]
+        
+        x_lar, x_small = large_data_point["X"], small_data_point["X"]
+        y_lar, y_small = large_data_point["y"], small_data_point["y"]
+        
+        if isinstance(x_lar, csr_matrix):
+            X_con = vstack((x_lar, x_small))
+        else:
+            X_con = torch.cat((x_lar, x_small)) # type: ignore
+        y_con = torch.cat((y_lar, y_small)) # type: ignore
+        
         return {
-            "X_lar": large_data_point["X"],
-            "X_small": small_data_point["X"],
-            "y": large_data_point["y"],
-            "y_small": small_data_point["y"],
+            "X": X_con,
+            "y": y_con
         }
-
-    # *Look at chatgpt implementation

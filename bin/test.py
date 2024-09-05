@@ -1,4 +1,5 @@
 import os
+import timeit
 from typing import Union
 
 import gin
@@ -16,7 +17,7 @@ from src.path_lib import *
 def main_data_test(
     args,
     model: LightningModule,
-    loader: LightningDataModule,
+    loader: TestLoader,
 ):
 
     loaded_model = model.load_from_checkpoint(CHECKPOINT_PATH / args.cn)
@@ -25,10 +26,20 @@ def main_data_test(
     )
 
     out = trainer.test(loaded_model, loader.test_dataloader())
+
+    # test inference speed on test set (one prediction at a time i.e. batch size 1)
+    loader.batch_size = 1 # type: ignore
+    my_loader = loader.test_dataloader()
+    time_start = timeit.default_timer()
+    trainer.predict(loaded_model, my_loader, return_predictions=False)
+    end_time = timeit.default_timer()
+
+    avg_time = (end_time - time_start) / len(my_loader.dataset) # type: ignore
     # write out to CONFIG_PATH with new line between each metric
     with open(CONFIG_PATH / "test_results.txt", "w") as f:
         for metric in out:
-            f.write(f"{metric}\n")
+            f.write(f"{metric}\n")#
+        f.write(f"Average inference time: {avg_time}\n")
     print(out)
 
     if args.plot:

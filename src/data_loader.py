@@ -143,7 +143,13 @@ class CustomDataLoader(LightningDataModule):
         Returns the log price of the molecules / mmol
         """
         df = pd.read_csv(self.dataframe)
-        return df["price_mmol"].apply(np.log).values  # type: ignore
+        if "price_mmol" in df.columns:
+            return df["price_mmol"].apply(np.log).values  # type: ignore
+        else:
+            print(
+                "WARNING: No price column found in dataframe. Using zeros instead. \n Note: Expected for combined datasets."
+            )
+            return np.zeros(df.shape[0])
 
     @abstractmethod
     def generate_features() -> None:
@@ -463,6 +469,7 @@ class FPLoader(CustomDataLoader):
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
         self.count = count_simulation  # whether to use count fingerprint
+        self.vocab_path = None # type: ignore
 
     def load_features(self):
         # load from pickled features
@@ -698,7 +705,7 @@ class TestLoader(LightningDataModule):
 
             for s in tqdm(smiles):
                 mol = Chem.MolFromSmiles(s)  # type: ignore
-                fp = self.fp_gen.GetFingerprintAsNumPy(mol).tolist()
+                fp = self.fp_gen.GetFingerprintAsNumPy(mol)
                 fps.append(fp)
 
             fps = torch.FloatTensor(fps)
@@ -786,7 +793,7 @@ class TestLoader(LightningDataModule):
             price = df["price"].apply(np.log).to_list()
         else:
             price = torch.FloatTensor(torch.zeros(first_feat.shape[0]))
-        test_data = FGDataset(price, *features)  # type: ignore
+        test_data = FGDataset(price, *features, vocab_path=None, smiles=None)  # type: ignore
 
         return DataLoader(
             test_data,
@@ -814,10 +821,6 @@ class CombinedLoader(LightningDataModule):
         if type(self.loader_1) != type(self.loader_2):
             raise ValueError("Loaders must be of same class")
 
-        self.train_dataset: Subset
-        self.val_dataset: Subset
-        self.test_dataset: Subset
-
     def prepare_data(self):
         for loader in self.loaders:
             if not loader.pickle_path.exists():
@@ -826,7 +829,7 @@ class CombinedLoader(LightningDataModule):
             else:
                 pass
 
-    def setup(self):
+    def setup(self, stage: str):
         train_list, val_list, test_list = [], [], []
         for loader in self.loaders:
             smiles = loader.get_smiles() if loader.augment else None
@@ -864,9 +867,9 @@ class CombinedLoader(LightningDataModule):
             val_list.append(val_data)
             test_list.append(test_data)
 
-        train_data = CombinedDataset(*train_list)
-        val_data = CombinedDataset(*val_list)
-        test_data = CombinedDataset(*test_list)
+        self.loader_1.train_data = CombinedDataset(*train_list) # type: ignore
+        self.loader_1.val_data = CombinedDataset(*val_list) # type: ignore
+        self.loader_1.test_data = CombinedDataset(*test_list) # type: ignore
 
     def train_dataloader(self) -> DataLoader:
         return self.loader_1.train_dataloader()
