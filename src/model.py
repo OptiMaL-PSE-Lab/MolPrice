@@ -241,10 +241,13 @@ class Fingerprints(CustomModule):
             nn.Linear(hidden_size_2, hidden_size_3),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.Linear(hidden_size_3, 10),
+            nn.ReLU(),
+            nn.Dropout(dropout),
         )
-        self.linear = nn.Linear(hidden_size_3, 1)
-        self.latent_mu = nn.Linear(hidden_size_3, latent_size)
-        self.latent_sigma = nn.Linear(hidden_size_3, latent_size)
+        self.linear = nn.Linear(10, 1)
+        self.latent_mu = nn.Linear(10, latent_size)
+        self.latent_sigma = nn.Linear(10, latent_size)
         self.loss_hp = loss_hp
         self.loss_sep = loss_sep
         self.save_hyperparameters()  #! Comment line for hp_tuning
