@@ -463,7 +463,7 @@ class FPLoader(CustomDataLoader):
         )
 
         if self.hp_tuning:
-            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}.pkl.npz"
+            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}_{count_simulation}.pkl.npz"
 
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
