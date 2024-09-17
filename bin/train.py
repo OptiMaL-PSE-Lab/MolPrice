@@ -207,6 +207,8 @@ if __name__ == "__main__":
     }
     if isinstance(args.cn, str):
         model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+        if args.combined:
+            model.loss_sep, model.loss_hp = True, 0.5
         print("Model loaded - training resumes.")
     else:
         model = model_dict[model_name](gin.REQUIRED)

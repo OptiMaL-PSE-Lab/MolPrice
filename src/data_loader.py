@@ -18,7 +18,7 @@ from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, save_npz, load_npz
 
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
@@ -449,7 +449,7 @@ class FPLoader(CustomDataLoader):
         count_simulation: bool,
     ) -> None:
 
-        pickle_path = feature_path / f"features_FP_{fp_type}.pkl.npz"
+        pickle_path = feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
         super().__init__(
             data_path,
             feature_path,
@@ -463,22 +463,20 @@ class FPLoader(CustomDataLoader):
         )
 
         if self.hp_tuning:
-            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}_{count_simulation}.pkl.npz"
+            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}.pkl.npz"
 
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
         self.count = count_simulation  # whether to use count fingerprint
         self.vocab_path = None # type: ignore
+        self.price_path = self.pickle_path.parent / "fp_prices.pkl.npz"
 
     def load_features(self):
         # load from pickled features
-        data = np.load(self.pickle_path, allow_pickle=True)
-        fps = data["features"]
-        price = data["price"]
-        # create sparse scipy matrix instead
-        fps = csr_matrix(fps)
+        price = np.load(self.price_path, allow_pickle=True)["price"]
         price = torch.from_numpy(price).float()
+        fps = load_npz(self.pickle_path)
 
         return price, fps, None  # type: ignore
 
@@ -513,10 +511,13 @@ class FPLoader(CustomDataLoader):
                 fps.append(fp)
 
         fps = np.array(fps, dtype=np.uint8)
-        price = self.get_price()
-        np.savez_compressed(
-            self.pickle_path, price=price, features=fps, allow_pickle=True
-        )
+        fps = csr_matrix(fps)
+        save_npz(self.pickle_path, fps)
+        if not self.price_path.exists():
+            price = self.get_price()
+            np.savez_compressed(
+                self.price_path, price=price, allow_pickle=True
+            )
 
     # * Overwrite due to sparse matrix manipulation needed to load in FPs
     def train_dataloader(self) -> DataLoader:

@@ -7,8 +7,8 @@ main.max_epoch = 100
 main.early_stopping = True
 main.patience = 20
 main.no_gpus = 1
-main.logging = True
-main.gradient_accum = 2
+main.logging = False
+main.gradient_accum = 1
 
 # Model Hyperparameters
 
@@ -36,8 +36,9 @@ FP.hidden_size_1 = 1024
 FP.hidden_size_2 = 256
 FP.hidden_size_3 = 124
 FP.dropout = 0.25
-FP.loss_hp = 0.3
-FP.loss_sep = True
+FP.loss_hp = 0.35
+FP.loss_sep = %loss_sep
+FP.latent_size = 2
 FP.configure_optimizers.optimizer = @fp/torch.optim.Adam
 fp/torch.optim.Adam.lr = %lr
 fp/torch.optim.Adam.weight_decay = 0
