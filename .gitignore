@@ -15,5 +15,10 @@ models/**/**.ckpt
 # system dir
 .vscode/
 **.pyc
+**.csv
 # hpc outpou
 scripts/train_model.sh.o**
+
+# testing
+models/**/**.png 
+rf/
