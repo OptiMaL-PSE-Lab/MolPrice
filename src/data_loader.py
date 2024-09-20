@@ -18,12 +18,13 @@ from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
-from scipy.sparse import csr_matrix, save_npz, load_npz
+from scipy.sparse import csr_matrix, save_npz, load_npz, hstack
 
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
-from src.model_utils import Tokenizer
+from src.model_utils import Tokenizer, MolFeatureExtractor
 from src.datasets import FGDataset, CombinedDataset
+from src.mhfp_encoder import MHFPEncoder
 
 
 class CustomDataLoader(LightningDataModule):
@@ -446,10 +447,13 @@ class FPLoader(CustomDataLoader):
         fp_type: str,
         fp_size: int,
         p_r_size: int,
+        two_d: bool,
         count_simulation: bool,
     ) -> None:
 
-        pickle_path = feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
+        pickle_path = (
+            feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
+        )
         super().__init__(
             data_path,
             feature_path,
@@ -468,8 +472,9 @@ class FPLoader(CustomDataLoader):
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
+        self.two_d = two_d  # whether to use 2D info in addition to fingerprint
         self.count = count_simulation  # whether to use count fingerprint
-        self.vocab_path = None # type: ignore
+        self.vocab_path = None  # type: ignore
         self.price_path = self.pickle_path.parent / "fp_prices.pkl.npz"
 
     def load_features(self):
@@ -500,24 +505,43 @@ class FPLoader(CustomDataLoader):
                 fpSize=self.fp_size,
                 countSimulation=self.count,
             )
+        elif self.fp_type == "mhfp":
+            pass
         else:
             raise ValueError("Fingerprint type not supported")
 
-        fps = []
-        for smi in self.get_batch_smiles(100000):
-            for s in smi:
-                mol = Chem.MolFromSmiles(s)  # type: ignore
-                fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-                fps.append(fp)
+        if self.fp_type == "mhfp":
+            with Pool(10) as p:
+                fps = list(
+                    tqdm(
+                        p.imap(self._mhfp_features, self.get_smiles(), chunksize=20),
+                        total=len(self.get_smiles()),
+                    )
+                )
+        else:
+            fps = []
+            for smi in self.get_batch_smiles(100000):
+                for s in smi:
+                    mol = Chem.MolFromSmiles(s)  # type: ignore
+                    fp = self.fp_gen.GetFingerprintAsNumPy(mol)
+                    fps.append(fp)
 
         fps = np.array(fps, dtype=np.uint8)
         fps = csr_matrix(fps)
+        if self.two_d:
+            feature_extractor = MolFeatureExtractor()
+            features = feature_extractor.encode(self.get_smiles())
+            features = csr_matrix(np.array(features))
+            # concatenate the two sparse matrices
+            fps = hstack([fps, features])
+
         save_npz(self.pickle_path, fps)
         if not self.price_path.exists():
             price = self.get_price()
-            np.savez_compressed(
-                self.price_path, price=price, allow_pickle=True
-            )
+            np.savez_compressed(self.price_path, price=price, allow_pickle=True)
+
+    def _mhfp_features(self, smi: str) -> np.ndarray:
+        return MHFPEncoder.secfp_from_smiles(smi, length=self.fp_size)
 
     # * Overwrite due to sparse matrix manipulation needed to load in FPs
     def train_dataloader(self) -> DataLoader:
@@ -868,9 +892,9 @@ class CombinedLoader(LightningDataModule):
             val_list.append(val_data)
             test_list.append(test_data)
 
-        self.loader_1.train_data = CombinedDataset(*train_list) # type: ignore
-        self.loader_1.val_data = CombinedDataset(*val_list) # type: ignore
-        self.loader_1.test_data = CombinedDataset(*test_list) # type: ignore
+        self.loader_1.train_data = CombinedDataset(*train_list)  # type: ignore
+        self.loader_1.val_data = CombinedDataset(*val_list)  # type: ignore
+        self.loader_1.test_data = CombinedDataset(*test_list)  # type: ignore
 
     def train_dataloader(self) -> DataLoader:
         return self.loader_1.train_dataloader()

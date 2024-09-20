@@ -229,10 +229,11 @@ class Fingerprints(CustomModule):
         dropout: float,
         loss_hp: float,
         loss_sep: bool,
+        two_d: bool # whether dataloader included 2D info in fingerprint
     ):
         super(Fingerprints, self).__init__()
         self.neural_network = nn.Sequential(
-            nn.Linear(input_size, hidden_size_1),
+            nn.Linear(input_size+10, hidden_size_1),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size_1, hidden_size_2),
@@ -306,7 +307,7 @@ class Fingerprints(CustomModule):
         hell_distance = self.pdf_separation(hs_mu, hs_sigma, es_mu, es_sigma)
         kl_div = 0.5*torch.sum((hs_sigma**2 + hs_mu**2 - 1 - torch.log(hs_sigma**2) + es_sigma**2 + es_mu**2 - 1 - torch.log(es_sigma**2)))
         mse_loss = self.mse_loss(es_out, es_label)
-        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * (1 - hell_distance) + 0.1*kl_div
+        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * (1 - hell_distance) + 0.02*kl_div 
         return total_loss, mse_loss, hell_distance
 
     def training_step(self, batch, batch_idx):

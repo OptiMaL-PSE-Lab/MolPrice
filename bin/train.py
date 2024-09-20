@@ -149,7 +149,7 @@ if __name__ == "__main__":
         type=str,
         help="Type of fingerprint to use",
         required=False,
-        choices=["morgan", "rdkit", "atom"],
+        choices=["morgan", "rdkit", "atom", "mhfp"],
         default="morgan",
     )
 
@@ -192,6 +192,8 @@ if __name__ == "__main__":
         hs_dataloader = data_object(data_path = hs_path, feature_path = hs_path, hp_tuning = False, df_name = "test_hs.csv")
         data_module = CombinedLoader(es_dataloader, hs_dataloader)
         gin.constant("loss_sep", True)
+    else: 
+        gin.constant("loss_sep", False)
 
     # parse model gin file after data_object has been loaded
     gin.parse_config_file(GIN_PATH_MODEL)

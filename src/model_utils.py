@@ -7,6 +7,8 @@ from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
 from multiprocessing import Pool
+from rdkit import Chem
+from rdkit.Chem import rdMolDescriptors, SpacialScore
 
 
 class Tokenizer:
@@ -88,6 +90,66 @@ class Tokenizer:
                 )
             )
         return encoded
+
+
+class MolFeatureExtractor:
+    def __init__(self):
+        pass
+
+    def encode(self, smi: str | list[str]) -> list[tuple] | tuple:
+        if isinstance(smi, list):
+            return self._batch_encode(smi)
+        elif isinstance(smi, str):
+            return self._encode(smi)
+
+    def _encode(self, smi: str) -> tuple:
+        return self._calculate_2D_feat(smi)
+
+    def _batch_encode(self, smiles: list[str]) -> list[tuple]:
+        with Pool(processes=10) as pool:
+            encoded = list(
+                tqdm(
+                    pool.imap(self._encode, smiles, chunksize=20),
+                    total=len(smiles),
+                )
+            )
+        return encoded
+
+    def _calculate_2D_feat(self, smi):
+        mol = Chem.MolFromSmiles(smi)
+        sp3 = rdMolDescriptors.CalcFractionCSP3(mol)
+        sps = SpacialScore.SPS(mol)
+        stereo = rdMolDescriptors.CalcNumAtomStereoCenters(mol)
+        rot_bonds = rdMolDescriptors.CalcNumRotatableBonds(mol)
+        tpsa = rdMolDescriptors.CalcTPSA(mol)
+        heterocyc = rdMolDescriptors.CalcNumHeterocycles(mol)
+        no_spiro = rdMolDescriptors.CalcNumSpiroAtoms(mol)
+        no_bridgehead = rdMolDescriptors.CalcNumBridgeheadAtoms(mol)
+        n_macro, n_multi = self.numMacroAndMulticycle(mol, mol.GetNumAtoms())
+        return (
+            sp3,
+            sps,
+            stereo,
+            rot_bonds,
+            tpsa,
+            heterocyc,
+            no_spiro,
+            no_bridgehead,
+            n_macro,
+            n_multi,
+        )
+
+    def numMacroAndMulticycle(self, mol, nAtoms):
+        ri = mol.GetRingInfo()  # type: ignore
+        nMacrocycles = 0
+        multi_ring_atoms = {i: 0 for i in range(nAtoms)}
+        for ring_atoms in ri.AtomRings():
+            if len(ring_atoms) > 6:
+                nMacrocycles += 1
+            for atom in ring_atoms:
+                multi_ring_atoms[atom] += 1
+        nMultiRingAtoms = sum([v - 1 for k, v in multi_ring_atoms.items() if v > 1])
+        return nMacrocycles, nMultiRingAtoms
 
 
 def calculate_max_training_step(path_data) -> None:

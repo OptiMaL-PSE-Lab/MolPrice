@@ -39,6 +39,7 @@ FP.dropout = 0.25
 FP.loss_hp = 0.35
 FP.loss_sep = %loss_sep
 FP.latent_size = 2
+FP.two_d = %two_d
 FP.configure_optimizers.optimizer = @fp/torch.optim.Adam
 fp/torch.optim.Adam.lr = %lr
 fp/torch.optim.Adam.weight_decay = 0
