@@ -178,6 +178,7 @@ if __name__ == "__main__":
 
     # read gin file
     CONFIG_PATH = CHECKPOINT_PATH.joinpath(args.cn).parent
+    #TODO Loss separation from config_info.txt 
 
     # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
     with open(CONFIG_PATH / "config_info.txt", "r") as f:

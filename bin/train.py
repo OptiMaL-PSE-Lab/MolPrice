@@ -186,7 +186,7 @@ if __name__ == "__main__":
         print("Using combined dataload. Only implemented for FP models for now.")
         # for now default dataset given by GASA for HS
         del data_module 
-        feature_path = DATA_PATH / "features" / "test"
+        feature_path = DATA_PATH / "features" / "molport_reduced"
         es_dataloader = data_object(data_path = DATABASE_PATH, feature_path = feature_path, hp_tuning = False)
         hs_path = TEST_PATH / "gasa"
         hs_dataloader = data_object(data_path = hs_path, feature_path = hs_path, hp_tuning = False, df_name = "test_hs.csv")
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     gin.parse_config_file(GIN_PATH_MODEL)
     calculate_max_training_step(
         DATABASE_PATH
-    )  # * Specific to the scheduler used (i.e. OneCycleLR)
+    )  #* Specific to the scheduler used (i.e. OneCycleLR)
     gin.finalize()
     model_name = args.model.split("_")[0]
     model_dict = {
@@ -208,9 +208,10 @@ if __name__ == "__main__":
         "Fingerprint": Fingerprints,
     }
     if isinstance(args.cn, str):
+        #TODO Still left to read correct config_info from checkpoint file 
         model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
         if args.combined:
-            model.loss_sep, model.loss_hp = True, 0.5
+            model.loss_sep, model.loss_hp = True, 0.5 #TODO hardcoded for now
         print("Model loaded - training resumes.")
     else:
         model = model_dict[model_name](gin.REQUIRED)

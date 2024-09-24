@@ -19,6 +19,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
 from scipy.sparse import csr_matrix, save_npz, load_npz, hstack
+from sklearn.preprocessing import StandardScaler
 
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
@@ -63,7 +64,7 @@ class CustomDataLoader(LightningDataModule):
             self.feature_path.mkdir(parents=True, exist_ok=True)
             self.generate_features()
         elif self.hp_tuning:
-            # * Only coded for fingerprints at the moment
+            #TODO Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass
@@ -531,7 +532,9 @@ class FPLoader(CustomDataLoader):
         if self.two_d:
             feature_extractor = MolFeatureExtractor()
             features = feature_extractor.encode(self.get_smiles())
-            features = csr_matrix(np.array(features))
+            features = np.array(features)
+            features = StandardScaler().fit_transform(features)
+            features = csr_matrix(features)
             # concatenate the two sparse matrices
             fps = hstack([fps, features])
 

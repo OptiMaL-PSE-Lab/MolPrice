@@ -232,8 +232,11 @@ class Fingerprints(CustomModule):
         two_d: bool # whether dataloader included 2D info in fingerprint
     ):
         super(Fingerprints, self).__init__()
+        if two_d:
+            input_size = input_size + 10
+        
         self.neural_network = nn.Sequential(
-            nn.Linear(input_size+10, hidden_size_1),
+            nn.Linear(input_size, hidden_size_1),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size_1, hidden_size_2),
@@ -367,7 +370,7 @@ class Fingerprints(CustomModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        #! yet to update
+        #TODO yet to update
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)

@@ -73,7 +73,8 @@ def objective(trial: optuna.trial.Trial) -> float:
         latent_size=1,
         dropout=dropout,
         loss_hp=False, 
-        loss_sep=False
+        loss_sep=False, 
+        two_d=False, #TODO update this dynamically
     )
     gin.parse_config_file(GIN_PATH_TUNING)
     gin.bind_parameter("torch.optim.Adam.lr", lr)

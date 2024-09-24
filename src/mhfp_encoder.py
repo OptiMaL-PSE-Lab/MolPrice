@@ -298,6 +298,7 @@ class MHFPEncoder:
             warnings.warn(
                 "The length of the shingling is 0, which results in an empty set and an all zero folded fingerprint."
             )
+            warnings.warn(f"Molecule that could not be converted is: {AllChem.MolToSmiles(in_mol)}")
 
         return shingling
 
