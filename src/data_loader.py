@@ -19,7 +19,6 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
 from scipy.sparse import csr_matrix, save_npz, load_npz, hstack
-from sklearn.preprocessing import StandardScaler
 
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
@@ -64,7 +63,7 @@ class CustomDataLoader(LightningDataModule):
             self.feature_path.mkdir(parents=True, exist_ok=True)
             self.generate_features()
         elif self.hp_tuning:
-            #TODO Only coded for fingerprints at the moment
+            # TODO Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass
@@ -451,10 +450,15 @@ class FPLoader(CustomDataLoader):
         two_d: bool,
         count_simulation: bool,
     ) -> None:
-
-        pickle_path = (
-            feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
-        )
+        
+        if two_d:
+            pickle_path = (
+                feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}_2D.npz"
+            )
+        else:
+            pickle_path = (
+                feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
+            )
         super().__init__(
             data_path,
             feature_path,
@@ -533,7 +537,9 @@ class FPLoader(CustomDataLoader):
             feature_extractor = MolFeatureExtractor()
             features = feature_extractor.encode(self.get_smiles())
             features = np.array(features)
-            features = StandardScaler().fit_transform(features)
+            features = feature_extractor.standardise_features(
+                features, self.fp_type, self.feature_path
+            )
             features = csr_matrix(features)
             # concatenate the two sparse matrices
             fps = hstack([fps, features])
@@ -711,6 +717,7 @@ class TestLoader(LightningDataModule):
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
             count_sim = gin.query_parameter("FPLoader.count_simulation")
             fp_size = gin.query_parameter("%fp_size")
+            two_d = gin.query_parameter("FPLoader.two_d")
             print(f"Creating feature vectors for {fp_type} fingerprint")
 
             if fp_type == "morgan":
@@ -735,6 +742,16 @@ class TestLoader(LightningDataModule):
                 mol = Chem.MolFromSmiles(s)  # type: ignore
                 fp = self.fp_gen.GetFingerprintAsNumPy(mol)
                 fps.append(fp)
+
+            if two_d:
+                feature_extractor = MolFeatureExtractor()
+                features = feature_extractor.encode(self.get_smiles())
+                features = np.array(features)
+                features = feature_extractor.standardise_features(
+                    features, fp_type, self.test_file.parent
+                )
+                # concatenate the two sparse matrices
+                fps = np.hstack([fps, features])
 
             fps = torch.FloatTensor(fps)
             fps = [fps, None]

@@ -123,7 +123,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
-    from src.model_utils import calculate_max_training_step
+    from src.model_utils import calculate_max_training_step, load_checkpointed_gin_config
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, CombinedLoader
     from src.path_lib import *
 
@@ -210,6 +210,8 @@ if __name__ == "__main__":
     if isinstance(args.cn, str):
         #TODO Still left to read correct config_info from checkpoint file 
         model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+        checkpoint_path = (CHECKPOINT_PATH / args.cn).parent 
+        load_checkpointed_gin_config(checkpoint_path)
         if args.combined:
             model.loss_sep, model.loss_hp = True, 0.5 #TODO hardcoded for now
         print("Model loaded - training resumes.")

@@ -2,13 +2,19 @@ import gin
 import math
 import re
 import os
+import numpy as np
 import pandas as pd
+import joblib
 from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
 from multiprocessing import Pool
+from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors, SpacialScore
+from sklearn.preprocessing import StandardScaler
+
+from path_lib import CHECKPOINT_PATH
 
 
 class Tokenizer:
@@ -151,6 +157,23 @@ class MolFeatureExtractor:
         nMultiRingAtoms = sum([v - 1 for k, v in multi_ring_atoms.items() if v > 1])
         return nMacrocycles, nMultiRingAtoms
 
+    def standardise_features(
+        self, features: np.ndarray, fp_name: str, scaler_path: Path
+    ) -> np.ndarray:
+        if os.path.exists(scaler_path / f"std_{fp_name}.bin"):
+            try:
+                scalar = joblib.load(scaler_path / f"std_{fp_name}.bin")
+                return scalar.transform(features)
+            except Exception as e:
+                raise (e)
+        else:
+            scalar = StandardScaler()
+            fitted_data = scalar.fit_transform(features)
+            joblib.dump(scalar, scaler_path / f"std_{fp_name}.bin")
+            # * also dump the scaler in all testing folders
+
+        return fitted_data
+
 
 def calculate_max_training_step(path_data) -> None:
     batch_size, acc_batches, epochs = (
@@ -168,6 +191,19 @@ def calculate_max_training_step(path_data) -> None:
     gin.bind_parameter(
         "transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps
     )
+
+
+def load_checkpointed_gin_config(checkpoint_path: Path) -> None:
+    CONFIG_PATH = CHECKPOINT_PATH.joinpath(checkpoint_path)
+    with open(CONFIG_PATH / "config_info.txt", "r") as f:
+        lines = f.readlines()
+    str_to_add = "import bin.train\nimport src.model\nimport src.data_loader\n"
+    with open(CONFIG_PATH / "config_temp.txt", "w") as f:
+        f.writelines(str_to_add)
+        f.writelines(lines[1:])
+    config_name = str(CONFIG_PATH / "config_temp.txt")
+    gin.parse_config_file(config_name)
+    os.remove(config_name)
 
 
 if __name__ == "__main__":
