@@ -66,7 +66,7 @@ def main_ood_test(
         outputs = {}
         for i, load in enumerate(loader):
             t_name = test_name[i].split("/")[-1]
-            out = trainer.predict(loaded_model, load.test_dataloader())
+            out= trainer.predict(loaded_model, load.test_dataloader())
             outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
     else:
         t_name = args.test_name.split("/")[-1]
@@ -103,7 +103,7 @@ def add_shared_arguments(parser):
         type=str,
         help="Type of fingerprint to use",
         required=False,
-        choices=["morgan", "rdkit", "atom"],
+        choices=["morgan", "rdkit", "atom", "mhfp"],
         default="morgan",
     )
 

@@ -187,6 +187,7 @@ if __name__ == "__main__":
         # for now default dataset given by GASA for HS
         del data_module 
         feature_path = DATA_PATH / "features" / "molport_reduced"
+        feature_path = DATA_PATH / "features" / "molport_reduced"
         es_dataloader = data_object(data_path = DATABASE_PATH, feature_path = feature_path, hp_tuning = False)
         hs_path = TEST_PATH / "gasa"
         hs_dataloader = data_object(data_path = hs_path, feature_path = hs_path, hp_tuning = False, df_name = "test_hs.csv")

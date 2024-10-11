@@ -537,9 +537,7 @@ class FPLoader(CustomDataLoader):
             feature_extractor = MolFeatureExtractor()
             features = feature_extractor.encode(self.get_smiles())
             features = np.array(features)
-            features = feature_extractor.standardise_features(
-                features, self.fp_type, self.feature_path
-            )
+            features = feature_extractor.standardise_features(features, self.fp_type, self.feature_path)
             features = csr_matrix(features)
             # concatenate the two sparse matrices
             fps = hstack([fps, features])
@@ -702,6 +700,7 @@ class TestLoader(LightningDataModule):
         self.batch_size = batch_size
         self.model_name = model_name
         self.has_price = has_price
+        self.fp_size: int
 
     def prepare_data(self):
 
@@ -716,32 +715,48 @@ class TestLoader(LightningDataModule):
             fp_type = gin.query_parameter("FPLoader.fp_type")
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
             count_sim = gin.query_parameter("FPLoader.count_simulation")
-            fp_size = gin.query_parameter("%fp_size")
+            self.fp_size = gin.query_parameter("%fp_size")
             two_d = gin.query_parameter("FPLoader.two_d")
             print(f"Creating feature vectors for {fp_type} fingerprint")
 
             if fp_type == "morgan":
                 # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
                 self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
-                    radius=p_r_size, fpSize=fp_size, countSimulation=count_sim
+                    radius=p_r_size, fpSize=self.fp_size, countSimulation=count_sim
                 )
             elif fp_type == "rdkit":
                 self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
-                    maxPath=p_r_size, fpSize=fp_size, countSimulation=count_sim
+                    maxPath=p_r_size, fpSize=self.fp_size, countSimulation=count_sim
                 )
             elif fp_type == "atom":
                 self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
                     maxDistance=p_r_size,
-                    fpSize=fp_size,
+                    fpSize=self.fp_size,
                     countSimulation=count_sim,
                 )
 
             fps = []
 
-            for s in tqdm(smiles):
-                mol = Chem.MolFromSmiles(s)  # type: ignore
-                fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-                fps.append(fp)
+            if fp_type == "mhfp":
+                with Pool(10) as p:
+                    fps = list(
+                        tqdm(
+                            p.imap(self._mhfp_features, smiles, chunksize=20),
+                            total=len(smiles),
+                        )
+                    )
+            else:
+                for s in tqdm(smiles):
+                    mol = Chem.MolFromSmiles(s)  # type: ignore
+                    fp = self.fp_gen.GetFingerprintAsNumPy(mol)
+                    fps.append(fp)
+
+            if two_d: 
+                feature_extractor = MolFeatureExtractor()
+                features = feature_extractor.encode(self.get_smiles())
+                features = np.array(features)
+                features = feature_extractor.standardise_features(features, fp_type, self.test_file.parent)
+                fps = np.hstack([fps, features])
 
             if two_d:
                 feature_extractor = MolFeatureExtractor()
@@ -850,6 +865,9 @@ class TestLoader(LightningDataModule):
     def get_smiles(self) -> list[str]:
         df = pd.read_csv(self.test_file)
         return df["smi_can"].to_list()
+
+    def _mhfp_features(self, smi: str) -> np.ndarray:
+        return MHFPEncoder.secfp_from_smiles(smi, length=self.fp_size)
 
 
 class CombinedLoader(LightningDataModule):

@@ -13,6 +13,10 @@ from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors, SpacialScore
 from sklearn.preprocessing import StandardScaler
+import joblib
+from pathlib import Path
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 
 from path_lib import CHECKPOINT_PATH
 
@@ -156,6 +160,7 @@ class MolFeatureExtractor:
                 multi_ring_atoms[atom] += 1
         nMultiRingAtoms = sum([v - 1 for k, v in multi_ring_atoms.items() if v > 1])
         return nMacrocycles, nMultiRingAtoms
+    
 
     def standardise_features(
         self, features: np.ndarray, fp_name: str, scaler_path: Path
