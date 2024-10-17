@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
-from path_lib import CHECKPOINT_PATH
+from src.path_lib import CHECKPOINT_PATH
 
 
 class Tokenizer:
@@ -160,7 +160,6 @@ class MolFeatureExtractor:
                 multi_ring_atoms[atom] += 1
         nMultiRingAtoms = sum([v - 1 for k, v in multi_ring_atoms.items() if v > 1])
         return nMacrocycles, nMultiRingAtoms
-    
 
     def standardise_features(
         self, features: np.ndarray, fp_name: str, scaler_path: Path
@@ -198,45 +197,18 @@ def calculate_max_training_step(path_data) -> None:
     )
 
 
-def load_checkpointed_gin_config(checkpoint_path: Path) -> None:
+def load_checkpointed_gin_config(checkpoint_path: Path, caller:str) -> None:
     CONFIG_PATH = CHECKPOINT_PATH.joinpath(checkpoint_path)
     with open(CONFIG_PATH / "config_info.txt", "r") as f:
         lines = f.readlines()
-    str_to_add = "import bin.train\nimport src.model\nimport src.data_loader\n"
+    if caller == "train":
+        str_to_add = "import src.data_loader\n"
+    else:
+        str_to_add = "import bin.train\nimport src.model\nimport src.data_loader\n"
     with open(CONFIG_PATH / "config_temp.txt", "w") as f:
         f.writelines(str_to_add)
         f.writelines(lines[1:])
     config_name = str(CONFIG_PATH / "config_temp.txt")
     gin.parse_config_file(config_name)
+    print(f"Loaded gin config file from {CONFIG_PATH}/config_temp.txt")
     os.remove(config_name)
-
-
-if __name__ == "__main__":
-    import os
-    import pandas as pd
-    from pathlib import Path
-
-    file_path = Path(__file__).parent.parent
-    vocab_path = file_path / "data/vocab" / "chemspace_reduced" / "vocab_SMILES.txt"
-    smiles_path = file_path / "data/databases" / "chemspace_reduced.txt"
-
-    no_cores = os.cpu_count() - 2  # type: ignore
-    examples = pd.read_csv(smiles_path, header=0)
-    dataset_size = examples.shape[0]
-    tokenizer = Tokenizer(no_cores, dataset_size)
-    examples = examples["smi_can"].tolist()
-    if not os.path.exists(vocab_path):
-        tokenized = tokenizer.tokenize(examples)
-        vocab = tokenizer.build_vocab(tokenized)
-        os.makedirs(vocab_path.parent, exist_ok=True)
-        with open(vocab_path, "w") as f:
-            for token, idx in vocab.items():
-                f.write(f"{token}\n")
-    else:
-        tokenized = tokenizer.tokenize(examples)
-    max_len = max(len(token.split()) for token in tokenized)
-    # get index for this max_len
-    index = [i for i, token in enumerate(tokenized) if len(token.split()) == max_len]
-    encoded = tokenizer.encode(tokenized)
-    # get the length of first string in encoded
-    print(encoded[index[0]])

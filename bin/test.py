@@ -12,6 +12,7 @@ from pytorch_lightning.accelerators import find_usable_cuda_devices  # type: ign
 from src.plotter import plot_parity, plot_dist_overlap
 from src.data_loader import TestLoader
 from src.path_lib import *
+from src.model_utils import load_checkpointed_gin_config
 
 
 def main_data_test(
@@ -181,14 +182,6 @@ if __name__ == "__main__":
     #TODO Loss separation from config_info.txt 
 
     # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
-    with open(CONFIG_PATH / "config_info.txt", "r") as f:
-        lines = f.readlines()
-    str_to_add = "import bin.train\nimport src.model\nimport src.data_loader\n"
-    with open(CONFIG_PATH / "config_temp.txt", "w") as f:
-        f.writelines(str_to_add)
-        f.writelines(lines[1:])
-    config_name = str(CONFIG_PATH / "config_temp.txt")
-    gin.parse_config_file(config_name)
-    os.remove(config_name)
+    load_checkpointed_gin_config(CONFIG_PATH, caller="test")
 
     args.func(args, model, test_loader)

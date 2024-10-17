@@ -98,7 +98,6 @@ class FgLSTM(CustomModule):
         lstm_size: float,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore="input_size, count_size")
         self.hidden_lstm = hidden_lstm
         self.hidden1_nn = hidden1_nn
         self.hidden2_nn = hidden2_nn
@@ -178,7 +177,7 @@ class FgLSTM(CustomModule):
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         self.log(
-            "train_loss",
+            "train_mse",
             loss,
             on_step=True,
             on_epoch=True,
@@ -211,10 +210,10 @@ class FgLSTM(CustomModule):
         self.test_labels.append(labels)
         mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return mse_loss
-
+    
 
 # Used for Fingerprints
 @gin.configurable("FP")  # type:ignore
@@ -225,18 +224,16 @@ class Fingerprints(CustomModule):
         hidden_size_1: int,
         hidden_size_2: int,
         hidden_size_3: int,
-        latent_size: int,
         dropout: float,
         loss_hp: float,
         loss_sep: bool,
         two_d: bool,  # whether dataloader included 2D info in fingerprint
     ):
-        if two_d:
-            input_size += 0  # TODO fix this for checkpointed models
+
         super(Fingerprints, self).__init__()
         if two_d:
-            input_size = input_size + 10
-        
+            input_size += 10
+
         self.neural_network = nn.Sequential(
             nn.Linear(input_size, hidden_size_1),
             nn.ReLU(),
@@ -250,39 +247,24 @@ class Fingerprints(CustomModule):
             nn.Linear(hidden_size_3, 10),
         )
         self.linear = nn.Linear(10, 1)
-        self.latent_mu = nn.Linear(10, latent_size)
-        self.latent_sigma = nn.Linear(10, latent_size)
         self.loss_hp = loss_hp
         self.loss_sep = loss_sep
-        self.save_hyperparameters()  #! Comment line for hp_tuning
+        self.dropout = dropout
+        self.input_size = input_size
 
     def forward(self, x):
+        x = self.neural_network(x)
+        x = F.relu(x)
+        x = F.dropout(x, self.dropout)
+        x = self.linear(x)
+        return x, x
+
+    def forward_sep(self, x):
         z = self.neural_network(x)
         z = F.leaky_relu(z, 0.1)
         x = F.dropout(z, 0.2)
         x = self.linear(x)
         return x, z
-
-    def forward_sep(self, x):
-        x = self.neural_network(x)
-        mu = self.latent_mu(x)
-        sigma = self.latent_sigma(x)
-        z = self.reparametrize(mu, sigma)
-        x = self.linear(x)
-        return x, z
-
-    def reparametrize(self, mu, sigma):
-        std = torch.exp(0.5 * sigma)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def approx_gaussian(
-        self, hs_z: torch.Tensor, es_z: torch.Tensor
-    ) -> list[torch.Tensor]:
-        # batch first so z has shape (N_batch, latent_size)
-        hs_mu, hs_sigma = hs_z.mean(dim=0), hs_z.std(dim=0)
-        es_mu, es_sigma = es_z.mean(dim=0), es_z.std(dim=0)
-        return [hs_mu, hs_sigma, es_mu, es_sigma]
 
     @gin.configurable(module="FP")  # type: ignore
     def configure_optimizers(
@@ -291,90 +273,14 @@ class Fingerprints(CustomModule):
         opt = optimizer(self.parameters())  # type: ignore
         return opt
 
-    def pdf_separation(self, hs_mu, hs_sigma, es_mu, es_sigma):
-        # get a measure of separation between distribution via hellinger distance
-        # * distance assumes diagonal covariance matrices
-        # first for univariate gaussian
-        if hs_mu.shape == torch.Size([1]):
-            hell_distance = 1 - torch.sqrt(
-                (2 * hs_sigma * es_sigma) / (hs_sigma**2 + es_sigma**2)
-            ) * torch.exp(
-                -0.25 * (hs_mu - es_mu) ** 2 / (hs_sigma**2 + es_sigma**2)
-            )
-        else:
-            hs_cov = torch.diag(hs_sigma**2)
-            es_cov = torch.diag(es_sigma**2)
-            hell_distance = 1 - (
-                torch.det(hs_cov) ** 0.25 * torch.det(es_cov) ** 0.25
-            ) / torch.det(0.5 * (hs_cov + es_cov)) ** 0.5 * torch.exp(
-                -0.125
-                * (hs_mu - es_mu)
-                @ torch.inverse(0.5 * (hs_cov + es_cov))
-                @ (hs_mu - es_mu)
-            )
-        return hell_distance
-
-    def loss_function(self, z, out, labels):
-        # first half of data is es_z and second half is hs_z
-        es_z, hs_z = z.chunk(2, dim=0)
-        es_label, _ = labels.chunk(2, dim=0)
-        es_out, hs_out = out.chunk(2, dim=0)
-        if hs_z.shape[1] != es_z.shape[1]:
-            raise ValueError("z is not split correctly")
-        hs_mu, hs_sigma, es_mu, es_sigma = self.approx_gaussian(hs_z, es_z)
-        hell_distance = self.pdf_separation(hs_mu, hs_sigma, es_mu, es_sigma)
-        kl_div_hs = 0.5 * torch.sum(
-            (hs_sigma**2 + hs_mu**2 - 1 - torch.log(hs_sigma**2))
-        )
-
-        kl_div_es = 0.5 * torch.sum(
-            (es_sigma**2) + es_mu**2 - 1 - torch.log(es_sigma**2)
-        )
-
-        mse_loss = self.mse_loss(es_out, es_label)
-        total_loss = (
-            self.loss_hp * mse_loss
-            + (1 - self.loss_hp) * (1 - hell_distance)
-            + 0.02 * kl_div_es
-            + 0.05 * kl_div_hs
-        )
-        return total_loss, mse_loss, hell_distance
-
-    def loss_price(self, z, out, labels):
-        es_label, _ = labels.chunk(2, dim=0)
-        es_out, hs_out = out.chunk(2, dim=0)
-        z_es, z_hs = z.chunk(2, dim=0)
-        hs_mu, hs_sigma, es_mu, es_sigma = self.approx_gaussian(hs_out, es_out)
-        z_hs_mu, z_hs_sigma, z_es_mu, z_es_sigma = self.approx_gaussian(z_hs, z_es)
-        hell_distance_z = self.pdf_separation(z_hs_mu, z_hs_sigma, z_es_mu, z_es_sigma)
-        kl_divergence_z = 0.5 * torch.sum(
-            (z_hs_sigma**2 + z_hs_mu**2 - 1 - torch.log(z_hs_sigma**2))
-        ) + 0.5 * torch.sum(
-            (z_es_sigma**2 + z_es_mu**2 - 1 - torch.log(z_es_sigma**2))
-        )
-        hell_distance = self.pdf_separation(hs_mu, hs_sigma, es_mu, es_sigma)
-        mse_loss = self.mse_loss(es_out, es_label)
-        # penalize v. high y values in es_out or hs_out
-        pen_loss = torch.sum(
-            torch.where(es_out > 15, es_out, torch.tensor(0.0))
-        ) + torch.sum(torch.where(hs_out > 15, hs_out, torch.tensor(0.0)))
-        total_loss = (
-            self.loss_hp * mse_loss
-            + (1 - self.loss_hp) * (1 - hell_distance)
-            + (1 - self.loss_hp) * (1 - hell_distance_z)
-            + 0.01 * pen_loss
-            + 0.02 * kl_divergence_z
-        )
-        return total_loss, mse_loss, hell_distance
-
-    def loss_contrastive(self, z, out, labels):
+    def contrastive_loss(self, z, out, labels):
         z_es, z_hs = z.chunk(2, dim=0)
         es_label, _ = labels.chunk(2, dim=0)
         es_out, hs_out = out.chunk(2, dim=0)
         cont_loss = self.cosine_similarity_loss(z_hs, z_es, 0)
         mse_loss = self.mse_loss(es_out, es_label)
-        total_loss = 0.2 * mse_loss + cont_loss
-        return total_loss
+        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * cont_loss
+        return total_loss, mse_loss, cont_loss
 
     def cosine_similarity_loss(self, h_HS, h_ES, lambda_val):
         # Normalize the embeddings to have unit norm (for cosine similarity)
@@ -382,7 +288,6 @@ class Fingerprints(CustomModule):
         h_ES = F.normalize(h_ES, p=2, dim=1)  # Shape: (B_ES, N)
 
         # Intra-class cosine similarity (HS-to-HS and ES-to-ES)
-        # Compute cosine similarities within HS and within ES via matrix multiplication
         cosine_sim_HS = torch.mm(h_HS, h_HS.t())  # Shape: (B_HS, B_HS)
         cosine_sim_ES = torch.mm(h_ES, h_ES.t())  # Shape: (B_ES, B_ES)
         # take absolute value
@@ -401,38 +306,18 @@ class Fingerprints(CustomModule):
         )  # Maximize cosine similarity for ES
 
         # Inter-class cosine similarity (HS-to-ES)
-        # Compute cosine similarities between HS and ES via matrix multiplication
         cosine_sim_inter = torch.mm(h_HS, h_ES.t())  # Shape: (B_HS, B_ES)
-        cosine_sim_inter = 1 + cosine_sim_inter
+        cosine_sim_inter =  cosine_sim_inter
 
         # Minimize inter-class cosine similarity
         inter_loss = (
             cosine_sim_inter.mean()
         )  # Minimize cosine similarity between HS and ES
-        p_hs = torch.abs(h_HS.mean(dim=0))
-        entropy_loss_hs = -torch.sum(p_hs * torch.log(p_hs + 1e-12)) / 10
-        p_es = torch.abs(h_ES.mean(dim=0))
-        entropy_loss_es = -torch.sum(p_es * torch.log(p_es + 1e-12)) / 10
 
         # Total loss
         total_loss = (
             intra_loss_HS + intra_loss_ES + 2 * inter_loss
         )  # + (entropy_loss_hs + entropy_loss_es)
-        return total_loss
-
-    def contrastive_loss(self, z, out, labels, margin=15):
-        # Intra-class distances (HS-to-HS and ES-to-ES)
-        # * loss function for simple distance loss
-        h_ES, h_HS = z.chunk(2, dim=0)
-        h_ES, h_HS = h_ES.mean(dim=0), h_HS.mean(dim=0)
-        h_ES_norm, h_HS_norm = F.normalize(h_ES, p=2, dim=0), F.normalize(
-            h_HS, p=2, dim=0
-        )
-        es_out, hs_out = out.chunk(2, dim=0)
-        es_label, _ = labels.chunk(2, dim=0)
-        cont_loss = -(torch.linalg.vector_norm(h_ES_norm - h_HS_norm))
-        mse_loss = self.mse_loss(es_out, es_label)
-        total_loss = cont_loss + mse_loss
         return total_loss
 
     def training_step(self, batch, batch_idx):
@@ -441,25 +326,26 @@ class Fingerprints(CustomModule):
         labels = labels.view(-1, 1)
         if self.loss_sep:
             output, z = self.forward_sep(inputs)
-            loss, mse_loss, hell_loss = self.loss_function(z, output, labels)
+            total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
             self.log_dict(
-                {"hellinger_distance": hell_loss, "mse_loss": mse_loss},
+                {"train_total": total_loss, "train_mse": mse_loss, "train_contrastive": cont_loss},
                 on_step=True,
                 on_epoch=True,
                 sync_dist=True,
             )
         else:
-            output, z = self.forward(inputs)
-            loss = self.loss_contrastive(z, output, labels)
-        self.log(
-            "train_loss",
-            loss,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        return loss
+            output, _ = self.forward(inputs)
+            mse_loss = self.mse_loss(output, labels)
+            total_loss = mse_loss
+            self.log(
+                "train_mse",
+                mse_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+        return total_loss
 
     def validation_step(self, batch, batch_idx):
         labels = batch["y"]
@@ -467,9 +353,9 @@ class Fingerprints(CustomModule):
         labels = labels.view(-1, 1)
         if self.loss_sep:
             output, z = self.forward_sep(inputs)
-            loss, mse_loss, hell_loss = self.loss_price(z, output, labels)
+            total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
             self.log_dict(
-                {"val_hellinger_distance": hell_loss, "val_mse_loss": mse_loss},
+                {"val_mse": mse_loss, "val_contrastive": cont_loss},
                 on_step=False,
                 on_epoch=True,
                 sync_dist=True,
@@ -478,32 +364,39 @@ class Fingerprints(CustomModule):
             labels, _ = labels.chunk(2, dim=0)
         else:
             inputs = batch["X"]
-            output, z = self.forward(inputs)
-            loss = self.loss_contrastive(z, output, labels)
+            output, _ = self.forward(inputs)
+            total_loss = self.mse_loss(output, labels)
 
         r2_score = self.r2_score(output, labels)
         if wandb.run:
             if self.trainer.global_step == 0:
-                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("val_mse", summary="min")
                 wandb.define_metric("r2_score", summary="max")
 
-        scores_to_log = {"val_loss": loss, "r2_score": r2_score}
+        scores_to_log = {"val_loss": total_loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
-        return loss
+        return total_loss
 
     def test_step(self, batch, batch_idx):
-        #TODO yet to update
         inputs, labels = batch["X"], batch["y"]
-        output = self.forward(inputs)
         labels = labels.view(-1, 1)
+        if self.loss_sep:
+            output, z = self.forward_sep(inputs)
+            total_loss, mse_loss, contrastive_loss = self.contrastive_loss(z, output, labels)
+            # only log cont loss here
+            self.log(
+                "test_contrastive", contrastive_loss, on_step=False, on_epoch=True, sync_dist=True
+            )
+        else:
+            output, _ = self.forward(inputs)
+            mse_loss = self.mse_loss(output, labels)
+            total_loss = mse_loss
         self.test_predictions.append(output)
         self.test_labels.append(labels)
-        mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
-        return mse_loss
-
+        return total_loss
 
 # class to be used for SMILES model
 @gin.configurable("Transformer")  # type:ignore
@@ -528,7 +421,6 @@ class TransformerEncoder(CustomModule):
             ]
         )
         self.fc = nn.Linear(embedding_size, 1)
-        self.save_hyperparameters(ignore="input_size")
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.embedding.weight)
@@ -552,7 +444,7 @@ class TransformerEncoder(CustomModule):
         return output
 
     def create_mask(self, x):
-        #! Assumes that masking token is 0 i.e. padding token
+        # * Assumes that masking token is 0 i.e. padding token
         mask = torch.gt(x, 0)
         # convert mask tensor to boolean list not of type Tensor, but type bool
         mask = mask.bool()
@@ -589,7 +481,7 @@ class TransformerEncoder(CustomModule):
         # convert output to floatTensor
         loss = self.mse_loss(output, labels)  # type: ignore
         self.log(
-            "train_loss",
+            "train_mse",
             loss,
             on_step=True,
             on_epoch=True,
@@ -606,7 +498,7 @@ class TransformerEncoder(CustomModule):
         r2_score = self.r2_score(output, labels)
         if wandb.run:
             if self.trainer.global_step == 0:
-                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("val_mse", summary="min")
                 wandb.define_metric("r2_score", summary="max")
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
@@ -620,7 +512,7 @@ class TransformerEncoder(CustomModule):
         self.test_labels.append(labels)
         mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return mse_loss
 

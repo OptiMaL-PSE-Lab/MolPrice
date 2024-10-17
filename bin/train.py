@@ -19,7 +19,7 @@ os.environ["WANDB_INIT_TIMEOUT"] = "1000"
 os.environ["WANDB_HTTP_TIMEOUT"] = "1000"
 
 
-@gin.configurable
+@gin.configurable(module="bin.train")
 def main(
     args,
     model: LightningModule,
@@ -67,7 +67,7 @@ def main(
     # initialize logger
     if logging:
         logger = WandbLogger(
-            project="graphfg",
+            project="price_molport",
             name=f"{args.model}-{args.fp}-{d}-{hour}",
             log_model="all",
             save_dir=args.log_path,
@@ -123,7 +123,10 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     from src.model import FgLSTM, TransformerEncoder, Fingerprints
-    from src.model_utils import calculate_max_training_step, load_checkpointed_gin_config
+    from src.model_utils import (
+        calculate_max_training_step,
+        load_checkpointed_gin_config,
+    )
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, CombinedLoader
     from src.path_lib import *
 
@@ -166,56 +169,79 @@ if __name__ == "__main__":
     parser.add_argument(
         "--combined",
         action="store_true",
-        help="Whether to use combined dataloaders to train via multitask learning",
+        help="Whether to use combined dataloaders to train via contrastive learning",
     )
 
+    # Parsing args
     args = parser.parse_args()
     args.checkpoint_path = CHECKPOINT_PATH
     args.log_path = path / "logs"
-    gin.parse_config_file(GIN_PATH_DATALOADER)
-    gin.bind_parameter("FPLoader.fp_type", args.fp)
+
+    # Parsing gin configs depending on if checkpoint is used
+    if args.cn:
+        gin.constant("loss_sep", True)
+        gin_checkpoint = (CHECKPOINT_PATH / args.cn).parent
+        load_checkpointed_gin_config(gin_checkpoint, "train")
+    else:
+        gin.constant("loss_sep", False)
+        gin.parse_config_file(GIN_PATH_MODEL)
+        gin.bind_parameter("FPLoader.fp_type", args.fp)
+
+    # Querying current dataset used for training
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
     feature_path = DATA_PATH / "features" / current_dataset
 
-    data_object = loader_dict[args.model]
-    data_module = data_object(
-        data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
-    )
-    
-    if args.combined:
-        print("Using combined dataload. Only implemented for FP models for now.")
-        # for now default dataset given by GASA for HS
-        del data_module 
-        feature_path = DATA_PATH / "features" / "molport_reduced"
-        feature_path = DATA_PATH / "features" / "molport_reduced"
-        es_dataloader = data_object(data_path = DATABASE_PATH, feature_path = feature_path, hp_tuning = False)
-        hs_path = TEST_PATH / "gasa"
-        hs_dataloader = data_object(data_path = hs_path, feature_path = hs_path, hp_tuning = False, df_name = "test_hs.csv")
-        data_module = CombinedLoader(es_dataloader, hs_dataloader)
-        gin.constant("loss_sep", True)
-    else: 
-        gin.constant("loss_sep", False)
-
-    # parse model gin file after data_object has been loaded
-    gin.parse_config_file(GIN_PATH_MODEL)
-    calculate_max_training_step(
-        DATABASE_PATH
-    )  #* Specific to the scheduler used (i.e. OneCycleLR)
-    gin.finalize()
+    # Initialising models from checkpoint or from scratch
     model_name = args.model.split("_")[0]
     model_dict = {
         "LSTM": FgLSTM,
         "Transformer": TransformerEncoder,
         "Fingerprint": Fingerprints,
     }
+
+    if model_name == "Transformer":
+        calculate_max_training_step(
+            DATABASE_PATH
+        )  # * Specific to the scheduler used (i.e. OneCycleLR)
+
     if isinstance(args.cn, str):
-        #TODO Still left to read correct config_info from checkpoint file 
-        model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
-        checkpoint_path = (CHECKPOINT_PATH / args.cn).parent 
-        load_checkpointed_gin_config(checkpoint_path)
-        if args.combined:
-            model.loss_sep, model.loss_hp = True, 0.5 #TODO hardcoded for now
+        # * Load weights of model, hyperparameters from checkpoint config.txt (to allow for changes in hyperparameters)
+        ckpt_dict = torch.load(CHECKPOINT_PATH / args.cn)
+        state_dict = ckpt_dict["state_dict"]
+        model = model_dict[model_name](gin.REQUIRED)
+        model.load_state_dict(state_dict, strict=False)
+        if args.combined and args.model == "Fingerprint":
+            # * Freeze the last layer weights to learn proper latent space representation
+            model.linear.weight.requires_grad = False
         print("Model loaded - training resumes.")
     else:
-        model = model_dict[model_name](gin.REQUIRED)
+        model = model_dict[model_name](
+            gin.REQUIRED
+        )  # loaded hps from model_configs.gin
+
+    # Dataloader and Model initialization depending on combined behaviour
+    data_object = loader_dict[args.model]
+    if args.combined:
+        print("Using combined dataload. Only implemented for FP models for now.")
+        # * for now default dataset given by GASA for HS
+        feature_path = DATA_PATH / "features" / "molport_reduced"
+        feature_path = DATA_PATH / "features" / "molport_reduced"
+        es_dataloader = data_object(
+            data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+        )
+        hs_path = TEST_PATH / "gasa"
+        hs_dataloader = data_object(
+            data_path=hs_path,
+            feature_path=hs_path,
+            hp_tuning=False,
+            df_name="test_hs.csv",
+        )
+        data_module = CombinedLoader(es_dataloader, hs_dataloader)
+    else:
+        data_object = loader_dict[args.model]
+        data_module = data_object(
+            data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+        )
+
+    gin.finalize()  # not allowing any more changes to the config
     main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore

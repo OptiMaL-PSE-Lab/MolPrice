@@ -63,7 +63,7 @@ class CustomDataLoader(LightningDataModule):
             self.feature_path.mkdir(parents=True, exist_ok=True)
             self.generate_features()
         elif self.hp_tuning:
-            # TODO Only coded for fingerprints at the moment
+            #TODO Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass

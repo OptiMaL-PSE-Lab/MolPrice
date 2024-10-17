@@ -6,7 +6,7 @@ df_name = "molport_reduced.txt"
 # Quick accessible FP features
 fp_size = 2048
 count_simulation = False
-two_d = True
+two_d = False
 
 EFGLoader.batch_size = %batch_size
 EFGLoader.workers_loader = 10
