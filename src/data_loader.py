@@ -13,7 +13,7 @@ import pandas as pd
 import torch
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator  # type: ignore
-from pytorch_lightning import LightningDataModule
+from lightning.pytorch import LightningDataModule
 from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
@@ -83,6 +83,8 @@ class CustomDataLoader(LightningDataModule):
         )
         if type(self).__name__ == "TFLoader":
             # sort data in train_data by length and shuffle indices for faster training due to different lengths
+            initial_augment = self.augment 
+            self.train_data.dataset.augment = False # type: ignore
             indices = sorted(
                 range(len(self.train_data)),
                 key=lambda x: len(self.train_data[x]["X"]),
@@ -100,6 +102,7 @@ class CustomDataLoader(LightningDataModule):
                 for item in sublist
             ]
             new_indices.extend(last_group)
+            self.train_data.dataset.augment = initial_augment # type: ignore
             self.train_data = Subset(self.train_data, new_indices)
 
     def train_dataloader(self) -> DataLoader:
@@ -471,9 +474,6 @@ class FPLoader(CustomDataLoader):
             self.collate_fn,
         )
 
-        if self.hp_tuning:
-            self.pickle_path = feature_path / f"FP_{fp_type}_{fp_size}.pkl.npz"
-
         self.fp_type = fp_type
         self.fp_size = fp_size  # the size of the fingerprint vector
         self.p_r_size = p_r_size  # the length of the path/radius
@@ -678,9 +678,14 @@ class TFLoader(CustomDataLoader):
     def collate_fn(self, batch):
         """Takes list of tensors and pads them to same length for batching"""
         data_batch = [b["X"] for b in batch]
+        y = torch.stack([b["y"] for b in batch])
+        if self.augment:
+            data_aug = [b["X_aug"] for b in batch]
+            data_batch.extend(data_aug)
+            y_aug = torch.stack([b["y_aug"] for b in batch])
+            y = torch.cat([y, y_aug])
         data_batch = pad_sequence(data_batch, batch_first=True, padding_value=0)
         data_batch = data_batch.long()
-        y = torch.stack([b["y"] for b in batch])
         return {"X": data_batch, "y": y}
 
 
@@ -751,19 +756,12 @@ class TestLoader(LightningDataModule):
                     fp = self.fp_gen.GetFingerprintAsNumPy(mol)
                     fps.append(fp)
 
-            if two_d: 
-                feature_extractor = MolFeatureExtractor()
-                features = feature_extractor.encode(self.get_smiles())
-                features = np.array(features)
-                features = feature_extractor.standardise_features(features, fp_type, self.test_file.parent)
-                fps = np.hstack([fps, features])
-
             if two_d:
                 feature_extractor = MolFeatureExtractor()
                 features = feature_extractor.encode(self.get_smiles())
                 features = np.array(features)
                 features = feature_extractor.standardise_features(
-                    features, fp_type, self.test_file.parent
+                    features, fp_type, self.test_file.parent.parent
                 )
                 # concatenate the two sparse matrices
                 fps = np.hstack([fps, features])

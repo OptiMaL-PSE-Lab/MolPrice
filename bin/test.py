@@ -5,14 +5,14 @@ from typing import Union
 import gin
 import torch
 import numpy as np
-import pytorch_lightning as L
-from pytorch_lightning import LightningModule, LightningDataModule
-from pytorch_lightning.accelerators import find_usable_cuda_devices  # type: ignore
+import lightning.pytorch as L
+from lightning.pytorch import LightningModule, LightningDataModule
+from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
 
 from src.plotter import plot_parity, plot_dist_overlap
 from src.data_loader import TestLoader
 from src.path_lib import *
-from src.model_utils import load_checkpointed_gin_config
+from src.model_utils import load_checkpointed_gin_config, load_model_from_checkpoint
 
 
 def main_data_test(
@@ -21,7 +21,7 @@ def main_data_test(
     loader: TestLoader,
 ):
 
-    loaded_model = model.load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+    loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
     trainer = L.Trainer(
         accelerator="auto", devices=find_usable_cuda_devices(), logger=False
     )
@@ -29,17 +29,17 @@ def main_data_test(
     out = trainer.test(loaded_model, loader.test_dataloader())
 
     # test inference speed on test set (one prediction at a time i.e. batch size 1)
-    loader.batch_size = 1 # type: ignore
+    loader.batch_size = 1  # type: ignore
     my_loader = loader.test_dataloader()
     time_start = timeit.default_timer()
     trainer.predict(loaded_model, my_loader, return_predictions=False)
     end_time = timeit.default_timer()
 
-    avg_time = (end_time - time_start) / len(my_loader.dataset) # type: ignore
+    avg_time = (end_time - time_start) / len(my_loader.dataset)  # type: ignore
     # write out to CONFIG_PATH with new line between each metric
     with open(CONFIG_PATH / "test_results.txt", "w") as f:
         for metric in out:
-            f.write(f"{metric}\n")#
+            f.write(f"{metric}\n")  #
         f.write(f"Average inference time: {avg_time}\n")
     print(out)
 
@@ -58,7 +58,7 @@ def main_ood_test(
     loader: Union[LightningDataModule, list[LightningDataModule]],
 ):
 
-    loaded_model = model.load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+    loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
     trainer = L.Trainer(
         accelerator="auto", devices=find_usable_cuda_devices(), logger=False
     )
@@ -67,7 +67,7 @@ def main_ood_test(
         outputs = {}
         for i, load in enumerate(loader):
             t_name = test_name[i].split("/")[-1]
-            out= trainer.predict(loaded_model, load.test_dataloader())
+            out = trainer.predict(loaded_model, load.test_dataloader())
             outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
     else:
         t_name = args.test_name.split("/")[-1]
@@ -82,14 +82,6 @@ def main_ood_test(
 def add_shared_arguments(parser):
     """Function to add shared arguments to a parser."""
     parser.add_argument(
-        "--checkpoint_name",
-        "--cn",
-        dest="cn",
-        type=str,
-        help="Name of the checkpoint file to load",
-        required=True,
-    )
-    parser.add_argument(
         "--model",
         type=str,
         help="Model to test",
@@ -98,20 +90,24 @@ def add_shared_arguments(parser):
     )
 
     parser.add_argument(
-        "--fingerprint_type",
-        "--fp",
-        dest="fp",
+        "--checkpoint_name",
+        "--cn",
+        dest="cn",
         type=str,
-        help="Type of fingerprint to use",
-        required=False,
-        choices=["morgan", "rdkit", "atom", "mhfp"],
-        default="morgan",
+        help="Name of the checkpoint file to load",
+        required=True,
     )
 
     parser.add_argument(
         "--plot",
         action="store_true",
         help="Whether to plot the parity plot",
+    )
+
+    parser.add_argument(
+        "--combined",
+        action="store_true",
+        help="If combined model has been used, activate --combined flag"
     )
 
 
@@ -179,7 +175,6 @@ if __name__ == "__main__":
 
     # read gin file
     CONFIG_PATH = CHECKPOINT_PATH.joinpath(args.cn).parent
-    #TODO Loss separation from config_info.txt 
 
     # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
     load_checkpointed_gin_config(CONFIG_PATH, caller="test")

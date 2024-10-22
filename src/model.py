@@ -1,11 +1,11 @@
 import gin
 import math
-import pytorch_lightning as L
+import lightning.pytorch as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchmetrics import R2Score
 from torchmetrics.regression import (
@@ -307,7 +307,7 @@ class Fingerprints(CustomModule):
 
         # Inter-class cosine similarity (HS-to-ES)
         cosine_sim_inter = torch.mm(h_HS, h_ES.t())  # Shape: (B_HS, B_ES)
-        cosine_sim_inter =  cosine_sim_inter
+        cosine_sim_inter =  1 + cosine_sim_inter
 
         # Minimize inter-class cosine similarity
         inter_loss = (
@@ -470,11 +470,6 @@ class TransformerEncoder(CustomModule):
 
     def training_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
-        if batch["X_aug"]:  # possible augmentation in batch
-            inp_extra = batch["X_aug"]
-            price_extra = batch["y_aug"]
-            inputs = torch.cat((inputs, inp_extra), dim=0)
-            labels = torch.cat((labels, price_extra), dim=0)
         # use model to get output
         output = self.forward(inputs)
         labels = labels.view(-1, 1)

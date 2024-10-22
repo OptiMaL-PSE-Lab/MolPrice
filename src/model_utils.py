@@ -5,6 +5,8 @@ import os
 import numpy as np
 import pandas as pd
 import joblib
+import torch
+from collections import defaultdict
 from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
@@ -18,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
-from src.path_lib import CHECKPOINT_PATH
+from src.path_lib import CHECKPOINT_PATH, TEST_PATH
 
 
 class Tokenizer:
@@ -39,6 +41,11 @@ class Tokenizer:
             return self._tokenize(smi)
 
     def encode(self, tokens: str | list[str]) -> list[int] | list[list[int]]:
+        if self.vocab:
+            vocab_len = len(self.vocab) 
+            vocab = defaultdict(lambda: vocab_len)
+            vocab.update(self.vocab) 
+            self.vocab = vocab
         if isinstance(tokens, list):
             return self._batch_encode(tokens)
         elif isinstance(tokens, str):
@@ -164,7 +171,7 @@ class MolFeatureExtractor:
     def standardise_features(
         self, features: np.ndarray, fp_name: str, scaler_path: Path
     ) -> np.ndarray:
-        if os.path.exists(scaler_path / f"std_{fp_name}.bin"):
+        if os.path.exists(scaler_path / f"std.bin"):
             try:
                 scalar = joblib.load(scaler_path / f"std_{fp_name}.bin")
                 return scalar.transform(features)
@@ -174,8 +181,8 @@ class MolFeatureExtractor:
             scalar = StandardScaler()
             fitted_data = scalar.fit_transform(features)
             joblib.dump(scalar, scaler_path / f"std_{fp_name}.bin")
-            # * also dump the scaler in all testing folders
-
+            # * also dump the scaler in testing folder
+            joblib.dump(scalar, TEST_PATH / f"std_{fp_name}.bin")
         return fitted_data
 
 
@@ -212,3 +219,10 @@ def load_checkpointed_gin_config(checkpoint_path: Path, caller:str) -> None:
     gin.parse_config_file(config_name)
     print(f"Loaded gin config file from {CONFIG_PATH}/config_temp.txt")
     os.remove(config_name)
+
+def load_model_from_checkpoint(model, checkpoint_path: Path):
+    ckpt_dict = torch.load(checkpoint_path)
+    state_dict = ckpt_dict["state_dict"]
+    model = model(gin.REQUIRED)
+    model.load_state_dict(state_dict, strict=False)
+    return model

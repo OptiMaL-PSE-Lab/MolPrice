@@ -1,18 +1,18 @@
 import os
 import gin
-import pytorch_lightning as L
+import lightning.pytorch as L
 import datetime
 from datetime import date
-from pytorch_lightning.loggers import WandbLogger, CSVLogger
-from pytorch_lightning.callbacks import (
+import gin.torch.external_configurables
+from lightning.pytorch.loggers import WandbLogger, CSVLogger
+from lightning.pytorch.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
     LearningRateMonitor,
 )
-from pytorch_lightning import LightningModule
+from lightning.pytorch import LightningModule
 
 from src.data_loader import CustomDataLoader
-import gin.torch.external_configurables
 
 # For running on cluster - slow connection to wandb
 os.environ["WANDB_INIT_TIMEOUT"] = "1000"
@@ -126,6 +126,7 @@ if __name__ == "__main__":
     from src.model_utils import (
         calculate_max_training_step,
         load_checkpointed_gin_config,
+        load_model_from_checkpoint,
     )
     from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, CombinedLoader
     from src.path_lib import *
@@ -206,10 +207,9 @@ if __name__ == "__main__":
 
     if isinstance(args.cn, str):
         # * Load weights of model, hyperparameters from checkpoint config.txt (to allow for changes in hyperparameters)
-        ckpt_dict = torch.load(CHECKPOINT_PATH / args.cn)
-        state_dict = ckpt_dict["state_dict"]
-        model = model_dict[model_name](gin.REQUIRED)
-        model.load_state_dict(state_dict, strict=False)
+        model = load_model_from_checkpoint(
+            model_dict[model_name], CHECKPOINT_PATH / args.cn
+        )
         if args.combined and args.model == "Fingerprint":
             # * Freeze the last layer weights to learn proper latent space representation
             model.linear.weight.requires_grad = False
