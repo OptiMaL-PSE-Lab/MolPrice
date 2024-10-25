@@ -7,6 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Optional, Generator, Callable
 
+import datasets
 import gin
 import numpy as np
 import pandas as pd
@@ -18,12 +19,13 @@ from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
+from transformers import RobertaTokenizer
 from scipy.sparse import csr_matrix, save_npz, load_npz, hstack
 
 from EFGs import mol2frag, cleavage
 from src.rdkit_ifg import identify_functional_groups as ifg
 from src.model_utils import Tokenizer, MolFeatureExtractor
-from src.datasets import FGDataset, CombinedDataset
+from src.datasets_torch import FGDataset, CombinedDataset
 from src.mhfp_encoder import MHFPEncoder
 
 
@@ -81,7 +83,7 @@ class CustomDataLoader(LightningDataModule):
             self.data_split,
             generator=torch.Generator().manual_seed(42),
         )
-        if type(self).__name__ == "TFLoader":
+        if type(self).__name__ in ["TFLoader", "RoBERTaLoader"]:
             # sort data in train_data by length and shuffle indices for faster training due to different lengths
             initial_augment = self.augment 
             self.train_data.dataset.augment = False # type: ignore
@@ -688,6 +690,62 @@ class TFLoader(CustomDataLoader):
         data_batch = data_batch.long()
         return {"X": data_batch, "y": y}
 
+@gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
+class RoBERTaLoader(CustomDataLoader):
+    def __init__(
+        self,
+        data_path,
+        feature_path,
+        batch_size,
+        workers_loader,
+        data_split,
+        df_name,
+        hp_tuning,
+    ) -> None:
+        pickle_path = feature_path / "features_BERT.pkl.npz"
+        super().__init__(
+            data_path,
+            feature_path,
+            pickle_path,
+            batch_size,
+            workers_loader,
+            data_split,
+            df_name,
+            hp_tuning,
+            self.collate_fn
+        )
+        self.vocab_path = None  # type: ignore
+        self.tokenizer: RobertaTokenizer
+        self.price: np.ndarray
+        self.features: np.ndarray
+
+
+    def generate_features(self):
+        #* as datagenerating is quick, no need to save data
+        smiles = self.get_smiles()
+        smiles = {"smi": smiles}
+        custom_dataset = datasets.Dataset.from_dict(smiles)
+        self.tokenizer = RobertaTokenizer.from_pretrained("DeepChem/ChemBERTa-10M-MLM")
+        encoded = custom_dataset.map(self._tokenize, batched=True, num_proc=self.workers_loader, batch_size=10000)
+        self.encoded = encoded["input_ids"]
+        price = self.get_price()
+        self.price = price
+
+    def load_features(self):
+        price = torch.from_numpy(self.price).float()
+        features = [torch.Tensor(row) for row in self.encoded]
+        return price, features, None
+        
+
+    def _tokenize(self, examples):
+        return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
+
+    def collate_fn(self, batch):
+        data_batch = [b["X"] for b in batch]
+        y = torch.stack([b["y"] for b in batch])
+        data_batch = pad_sequence(data_batch, batch_first=True, padding_value=0)
+        data_batch = data_batch.long()
+        return {"X": data_batch, "y": y}
 
 # Data Loader explicitly used for testing on diverse datasets
 class TestLoader(LightningDataModule):

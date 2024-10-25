@@ -13,6 +13,7 @@ from torchmetrics.regression import (
     MeanAbsoluteError,
     SpearmanCorrCoef,
 )
+from transformers import RobertaConfig, RobertaModel, get_linear_schedule_with_warmup
 
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
@@ -213,7 +214,7 @@ class FgLSTM(CustomModule):
         scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return mse_loss
-    
+
 
 # Used for Fingerprints
 @gin.configurable("FP")  # type:ignore
@@ -307,7 +308,7 @@ class Fingerprints(CustomModule):
 
         # Inter-class cosine similarity (HS-to-ES)
         cosine_sim_inter = torch.mm(h_HS, h_ES.t())  # Shape: (B_HS, B_ES)
-        cosine_sim_inter =  1 + cosine_sim_inter
+        cosine_sim_inter = 1 + cosine_sim_inter
 
         # Minimize inter-class cosine similarity
         inter_loss = (
@@ -328,7 +329,11 @@ class Fingerprints(CustomModule):
             output, z = self.forward_sep(inputs)
             total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
             self.log_dict(
-                {"train_total": total_loss, "train_mse": mse_loss, "train_contrastive": cont_loss},
+                {
+                    "train_total": total_loss,
+                    "train_mse": mse_loss,
+                    "train_contrastive": cont_loss,
+                },
                 on_step=True,
                 on_epoch=True,
                 sync_dist=True,
@@ -382,10 +387,16 @@ class Fingerprints(CustomModule):
         labels = labels.view(-1, 1)
         if self.loss_sep:
             output, z = self.forward_sep(inputs)
-            total_loss, mse_loss, contrastive_loss = self.contrastive_loss(z, output, labels)
+            total_loss, mse_loss, contrastive_loss = self.contrastive_loss(
+                z, output, labels
+            )
             # only log cont loss here
             self.log(
-                "test_contrastive", contrastive_loss, on_step=False, on_epoch=True, sync_dist=True
+                "test_contrastive",
+                contrastive_loss,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
             )
         else:
             output, _ = self.forward(inputs)
@@ -397,6 +408,99 @@ class Fingerprints(CustomModule):
         scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return total_loss
+
+
+@gin.configurable("RoBERTa")  # type:ignore
+class RoBERTaClassification(CustomModule):
+    def __init__(
+        self,
+        hidden_size: int,
+        dropout: float,
+    ):
+        super(RoBERTaClassification, self).__init__()
+        self.config = RobertaConfig.from_pretrained("DeepChem/ChemBERTa-10M-MLM")
+        self.pretrained_model = RobertaModel.from_pretrained(
+            "DeepChem/ChemBERTa-10M-MLM", config=self.config
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(self.config.hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1),
+        )
+
+    def forward(self, x):
+        out = self.pretrained_model(x)
+        out = out.pooler_output
+        out = self.classifier(out)
+        return out
+
+    def training_step(self, batch, batch_idx):
+        inputs, labels = batch["X"], batch["y"]
+        output = self.forward(inputs)
+        labels = labels.view(-1, 1)
+        loss = self.mse_loss(output, labels)
+        self.log(
+            "train_mse",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        inputs, labels = batch["X"], batch["y"]
+        output = self.forward(inputs)
+        labels = labels.view(-1, 1)
+        loss = self.mse_loss(output, labels)
+        r2_score = self.r2_score(output, labels)
+        if wandb.run:
+            if self.trainer.global_step == 0:
+                wandb.define_metric("val_mse", summary="min")
+                wandb.define_metric("r2_score", summary="max")
+        scores_to_log = {"val_loss": loss, "r2_score": r2_score}
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        inputs, labels = batch["X"], batch["y"]
+        output = self.forward(inputs)
+        labels = labels.view(-1, 1)
+        self.test_predictions.append(output)
+        self.test_labels.append(labels)
+        mse_loss = self.mse_loss(output, labels)
+        mae_loss = self.mae_loss(output, labels)
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
+        return mse_loss
+
+    @gin.configurable(module="RoBERTa")  # type: ignore
+    def configure_optimizers(self, optimizer: torch.optim.Optimizer, ):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 1e-4,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        opt = optimizer(self.parameters())  # type: ignore
+        return opt
+
 
 # class to be used for SMILES model
 @gin.configurable("Transformer")  # type:ignore

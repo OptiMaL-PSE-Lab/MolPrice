@@ -13,7 +13,7 @@ bin.train.main.gradient_accum = 1
 # Model Hyperparameters
 
 # Constants 
-lr = 1e-5
+lr = 1e-4
 weight_decay=5e-6
 
 
@@ -59,3 +59,8 @@ transformer/torch.optim.lr_scheduler.OneCycleLR.max_lr = %lr_tf
 transformer/torch.optim.lr_scheduler.OneCycleLR.pct_start = 0.25
 # initial guess to be overwritten
 transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps = 1e6 
+
+RoBERTa.hidden_size = 150
+RoBERTa.dropout = 0.15
+RoBERTa.configure_optimizers.optimizer = @RoBERTa/torch.optim.AdamW
+RoBERTa/torch.optim.AdamW.lr = %lr

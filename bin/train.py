@@ -122,13 +122,13 @@ if __name__ == "__main__":
     import torch
     from argparse import ArgumentParser
 
-    from src.model import FgLSTM, TransformerEncoder, Fingerprints
+    from src.model import FgLSTM, TransformerEncoder, RoBERTaClassification, Fingerprints
     from src.model_utils import (
         calculate_max_training_step,
         load_checkpointed_gin_config,
         load_model_from_checkpoint,
     )
-    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, CombinedLoader
+    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, RoBERTaLoader, CombinedLoader
     from src.path_lib import *
 
     loader_dict = {
@@ -136,6 +136,7 @@ if __name__ == "__main__":
         "LSTM_IFG": IFGLoader,
         "Fingerprint": FPLoader,
         "Transformer": TFLoader,
+        "RoBERTa": RoBERTaLoader,
     }
 
     parser = ArgumentParser()
@@ -144,7 +145,7 @@ if __name__ == "__main__":
         type=str,
         help="Model to train",
         required=True,
-        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "RoBERTa","Fingerprint"],
     )
     parser.add_argument(
         "--fingerprint_type",
@@ -197,6 +198,7 @@ if __name__ == "__main__":
     model_dict = {
         "LSTM": FgLSTM,
         "Transformer": TransformerEncoder,
+        "RoBERTa": RoBERTaClassification,
         "Fingerprint": Fingerprints,
     }
 
