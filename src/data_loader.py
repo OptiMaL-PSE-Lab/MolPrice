@@ -65,7 +65,7 @@ class CustomDataLoader(LightningDataModule):
             self.feature_path.mkdir(parents=True, exist_ok=True)
             self.generate_features()
         elif self.hp_tuning:
-            #TODO Only coded for fingerprints at the moment
+            # TODO Only coded for fingerprints at the moment
             self.generate_features()
         else:
             pass
@@ -85,8 +85,8 @@ class CustomDataLoader(LightningDataModule):
         )
         if type(self).__name__ in ["TFLoader", "RoBERTaLoader"]:
             # sort data in train_data by length and shuffle indices for faster training due to different lengths
-            initial_augment = self.augment 
-            self.train_data.dataset.augment = False # type: ignore
+            initial_augment = self.augment
+            self.train_data.dataset.augment = False  # type: ignore
             indices = sorted(
                 range(len(self.train_data)),
                 key=lambda x: len(self.train_data[x]["X"]),
@@ -104,7 +104,7 @@ class CustomDataLoader(LightningDataModule):
                 for item in sublist
             ]
             new_indices.extend(last_group)
-            self.train_data.dataset.augment = initial_augment # type: ignore
+            self.train_data.dataset.augment = initial_augment  # type: ignore
             self.train_data = Subset(self.train_data, new_indices)
 
     def train_dataloader(self) -> DataLoader:
@@ -455,12 +455,9 @@ class FPLoader(CustomDataLoader):
         two_d: bool,
         count_simulation: bool,
     ) -> None:
-        
-        if two_d:
-            pickle_path = (
-                feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}_2D.npz"
-            )
-        else:
+        if fp_type == "mhfp":
+            pickle_path = feature_path / f"features_FP_{fp_type}_{fp_size}_False.npz"
+        else: 
             pickle_path = (
                 feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
             )
@@ -489,7 +486,9 @@ class FPLoader(CustomDataLoader):
         price = np.load(self.price_path, allow_pickle=True)["price"]
         price = torch.from_numpy(price).float()
         fps = load_npz(self.pickle_path)
-
+        if self.two_d:
+            features = load_npz(self.pickle_path.parent / "features_2D.npz")
+            fps = hstack([fps, features])
         return price, fps, None  # type: ignore
 
     def generate_features(self):
@@ -518,7 +517,7 @@ class FPLoader(CustomDataLoader):
             raise ValueError("Fingerprint type not supported")
 
         if self.fp_type == "mhfp":
-            with Pool(10) as p:
+            with Pool(os.cpu_count()) as p:
                 fps = list(
                     tqdm(
                         p.imap(self._mhfp_features, self.get_smiles(), chunksize=20),
@@ -535,14 +534,15 @@ class FPLoader(CustomDataLoader):
 
         fps = np.array(fps, dtype=np.uint8)
         fps = csr_matrix(fps)
-        if self.two_d:
-            feature_extractor = MolFeatureExtractor()
+        two_d_path = self.pickle_path.parent / "features_2D.npz"
+        if self.two_d and not two_d_path.exists():
+            feature_extractor = MolFeatureExtractor(self.feature_path)
             features = feature_extractor.encode(self.get_smiles())
             features = np.array(features)
-            features = feature_extractor.standardise_features(features, self.fp_type, self.feature_path)
+            features = feature_extractor.standardise_features(features)
             features = csr_matrix(features)
             # concatenate the two sparse matrices
-            fps = hstack([fps, features])
+            save_npz(two_d_path, features)
 
         save_npz(self.pickle_path, fps)
         if not self.price_path.exists():
@@ -815,12 +815,10 @@ class TestLoader(LightningDataModule):
                     fps.append(fp)
 
             if two_d:
-                feature_extractor = MolFeatureExtractor()
+                feature_extractor = MolFeatureExtractor(self.test_file.parent.parent)
                 features = feature_extractor.encode(self.get_smiles())
                 features = np.array(features)
-                features = feature_extractor.standardise_features(
-                    features, fp_type, self.test_file.parent.parent
-                )
+                features = feature_extractor.standardise_features(features)
                 # concatenate the two sparse matrices
                 fps = np.hstack([fps, features])
 

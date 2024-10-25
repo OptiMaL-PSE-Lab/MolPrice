@@ -7,3 +7,4 @@ FP.configure_optimizers.optimizer = @torch.optim.Adam
 
 # to be overwritten by the hp tuning scripts
 torch.optim.Adam.lr = 1e-4
+torch.optim.Adam.weight_decay = 5e-6

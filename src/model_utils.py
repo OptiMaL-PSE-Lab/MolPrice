@@ -110,8 +110,8 @@ class Tokenizer:
 
 
 class MolFeatureExtractor:
-    def __init__(self):
-        pass
+    def __init__(self, scaler_path: Path):
+        self.scaler_path = scaler_path
 
     def encode(self, smi: str | list[str]) -> list[tuple] | tuple:
         if isinstance(smi, list):
@@ -169,20 +169,20 @@ class MolFeatureExtractor:
         return nMacrocycles, nMultiRingAtoms
 
     def standardise_features(
-        self, features: np.ndarray, fp_name: str, scaler_path: Path
+        self, features: np.ndarray
     ) -> np.ndarray:
-        if os.path.exists(scaler_path / f"std.bin"):
+        if os.path.exists(self.scaler_path / f"std.bin"):
             try:
-                scalar = joblib.load(scaler_path / f"std_{fp_name}.bin")
+                scalar = joblib.load(self.scaler_path / f"std.bin")
                 return scalar.transform(features)
             except Exception as e:
                 raise (e)
         else:
             scalar = StandardScaler()
             fitted_data = scalar.fit_transform(features)
-            joblib.dump(scalar, scaler_path / f"std_{fp_name}.bin")
+            joblib.dump(scalar, self.scaler_path / f"std.bin")
             # * also dump the scaler in testing folder
-            joblib.dump(scalar, TEST_PATH / f"std_{fp_name}.bin")
+            joblib.dump(scalar, TEST_PATH / f"std.bin")
         return fitted_data
 
 

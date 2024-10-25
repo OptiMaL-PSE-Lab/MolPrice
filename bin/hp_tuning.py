@@ -12,9 +12,9 @@ from lightning.pytorch.loggers import WandbLogger
 from optuna.integration import PyTorchLightningPruningCallback  # type: ignore
 
 from src.model import Fingerprints
-from src.data_loader import FPLoader
+from src.data_loader import FPLoader, CombinedLoader
 from src.model_utils import load_model_from_checkpoint, load_checkpointed_gin_config
-from src.path_lib import CHECKPOINT_PATH
+from src.path_lib import CHECKPOINT_PATH, TEST_PATH
 
 
 def objective_single_price(trial: optuna.trial.Trial) -> float:
@@ -24,12 +24,13 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
         wandb.finish()
     # optimize learning rate, batch size, fingerprint size, hidden_dim, dropout
     lr = trial.suggest_float("lr", 5e-5, 5e-3, log=True)
+    weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-3, log=True)
     batch_size = trial.suggest_categorical("batch_size", [64, 128, 256])
     dropout = trial.suggest_float("dropout", 0.1, 0.3, step=0.05)
-    fingerprint_size = trial.suggest_categorical("fingeprint_size", [1024, 2048, 4096])
-    hidden_dim_1 = trial.suggest_categorical("hidden_dim_1", [256, 512, 1024])
-    hidden_dim_2 = trial.suggest_categorical("hidden_dim_2", [256, 512, 1024])
-    hidden_dim_3 = trial.suggest_categorical("hidden_dim_3", [64, 128, 256, 512])
+    fingerprint_size = trial.suggest_categorical("fingeprint_size", [2048, 4096])
+    hidden_dim_1 = trial.suggest_categorical("hidden_dim_1", [512, 1024])
+    hidden_dim_2 = trial.suggest_categorical("hidden_dim_2", [256, 512])
+    hidden_dim_3 = trial.suggest_categorical("hidden_dim_3", [64, 128, 256])
     two_d = trial.suggest_categorical("two_d", [True, False])
     count_simulation = trial.suggest_categorical("count_simulation", [True, False])
     fp_type = trial.suggest_categorical("fp_type", ["morgan", "rdkit", "mhfp", "atom"])
@@ -44,14 +45,14 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
     config["trial_number"] = trial.number
 
     # set up callbacks
-    save_path = path / "logs" / "hp_tuning"
+    save_path = path / "logs" / STUDY_NAME
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     logger = WandbLogger(
-        project="hp_tuning",
+        project=STUDY_NAME,
         config=config,
-        save_dir=path / "logs" / "hp_tuning",
+        save_dir=save_path,
         log_model=False,
         reinit=True,
     )
@@ -85,10 +86,11 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
     )
     gin.parse_config_file(GIN_PATH_TUNING)
     gin.bind_parameter("torch.optim.Adam.lr", lr)
+    gin.bind_parameter("torch.optim.Adam.weight_decay", weight_decay)
 
     trainer = Trainer(
         logger=logger,
-        max_epochs=20,
+        max_epochs=10,
         accelerator="auto",
         devices=1,
         callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
@@ -129,6 +131,7 @@ def objective_combined(trial: optuna.trial.Trial):
 
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
     feature_path = DATA_PATH / "features" / f"{current_dataset}/hp_tuning"
+    test_path = TEST_PATH / "gasa"
     # create feature path if it does not exist
     if not os.path.exists(feature_path):
         raise FileNotFoundError(f"Feature path {feature_path} should exist as this code is using a pre-trained model.")
@@ -137,33 +140,36 @@ def objective_combined(trial: optuna.trial.Trial):
     config["trial_number"] = trial.number
 
     # set up callbacks
-    save_path = path / "logs" / "hp_tuning_combined"
+    save_path = path / "logs" / STUDY_NAME
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     logger = WandbLogger(
-        project="hp_tuning_combined",
+        project=STUDY_NAME,
         config=config,
-        save_dir=path / "logs" / "hp_tuning_combined",
+        save_dir=save_path,
         log_model=False,
         reinit=True,
     )
-
-    # set up the data loader
-    data_object = FPLoader(
+    
+    es_loader = FPLoader(
         data_path=DATABASE_PATH,
         feature_path=feature_path,
         batch_size=batch_size,
-        count_simulation=gin.REQUIRED, # type: ignore
-        fp_type=gin.REQUIRED, # type: ignore
-        two_d = gin.REQUIRED, # type: ignore
-        workers_loader=gin.REQUIRED,
-        data_split=gin.REQUIRED,
-        df_name=gin.REQUIRED,
-        fp_size=gin.REQUIRED, # type: ignore
-        p_r_size=gin.REQUIRED,  # type: ignore
+        df_name="test_es.csv",
         hp_tuning=True,
+        *gin.REQUIRED, # type: ignore
     )
+        
+    hs_loader = FPLoader(
+        data_path=test_path,
+        feature_path=test_path,
+        batch_size=batch_size,
+        df_name = "test_hs.csv",
+        hp_tuning=True,
+        *gin.REQUIRED, # type: ignore
+    )
+    data_module = CombinedLoader(es_loader, hs_loader)
 
     # set up the model
     model = Fingerprints(
@@ -190,7 +196,7 @@ def objective_combined(trial: optuna.trial.Trial):
         enable_progress_bar=False,
     )
 
-    trainer.fit(model, datamodule=data_object)
+    trainer.fit(model, datamodule=data_module)
     # get the best validation loss from the model
     val_summary = wandb.run.summary if wandb.run else None
     if val_summary:
@@ -214,16 +220,18 @@ if __name__ == "__main__":
 
     gin.parse_config_file(GIN_PATH_DATALOADER)
 
-    pruner = optuna.pruners.MedianPruner(n_warmup_steps=8)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
     
     if args.combined:
+        STUDY_NAME = "hp_tuning_combined"
         study = optuna.create_study(
-            direction="minimize", pruner=pruner, study_name="hp_tuning_combined"
+            direction="minimize", pruner=pruner, study_name=STUDY_NAME
         )
-        study.optimize(objective_single_price, n_trials=35)
+        study.optimize(objective_single_price, n_trials=50)
     else: 
+        STUDY_NAME = "hp_tuning_2"
         study = optuna.create_study(
-            direction="minimize", pruner=pruner, study_name="hp_tuning"
+            direction="minimize", pruner=pruner, study_name=STUDY_NAME
         )
         study.optimize(objective_single_price, n_trials=35)
 
@@ -237,10 +245,7 @@ if __name__ == "__main__":
         print(f"    {key}: {value}")
 
     # plot optimization history with wandb
-    if args.combined:
-        wandb.init(project="hp_tuning_combined")
-    else:
-        wandb.init(project="hp_tuning")
+    wandb.init(project=STUDY_NAME)
     
     wandb.log(
         {

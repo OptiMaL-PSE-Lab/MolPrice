@@ -255,8 +255,6 @@ class Fingerprints(CustomModule):
 
     def forward(self, x):
         x = self.neural_network(x)
-        x = F.relu(x)
-        x = F.dropout(x, self.dropout)
         x = self.linear(x)
         return x, x
 
@@ -498,7 +496,7 @@ class RoBERTaClassification(CustomModule):
             },
         ]
 
-        opt = optimizer(self.parameters())  # type: ignore
+        opt = optimizer(optimizer_grouped_parameters)  # type: ignore
         return opt
 
 
