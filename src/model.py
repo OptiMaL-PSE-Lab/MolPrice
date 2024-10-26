@@ -422,14 +422,14 @@ class RoBERTaClassification(CustomModule):
         )
         self.classifier = nn.Sequential(
             nn.Linear(self.config.hidden_size, hidden_size),
-            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, 1),
         )
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        out = self.pretrained_model(x)
-        out = out.pooler_output
+        out = self.pretrained_model(x)[1]
+        out = self.dropout(out)
         out = self.classifier(out)
         return out
 
@@ -474,30 +474,21 @@ class RoBERTaClassification(CustomModule):
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return mse_loss
 
-    @gin.configurable(module="RoBERTa")  # type: ignore
-    def configure_optimizers(self, optimizer: torch.optim.Optimizer, ):
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 1e-4,
+    @gin.configurable(module="roberta")  # type: ignore
+    def configure_optimizers(
+        self,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
+    ) -> OptimizerLRScheduler:
+        opt = optimizer(self.parameters())  # type: ignore
+        scheduler = scheduler(opt)  # type: ignore
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,  # scheduler is LinearLR from gin file
+                "interval": "step",  # The scheduler updates the learning rate after each epoch
             },
-            {
-                "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-
-        opt = optimizer(optimizer_grouped_parameters)  # type: ignore
-        return opt
+        }
 
 
 # class to be used for SMILES model
@@ -542,7 +533,6 @@ class TransformerEncoder(CustomModule):
 
         cls_hidden_state = embedded.max(dim=1)[0]  # (N_batch, embedding_size)
         output = self.fc(cls_hidden_state)
-        output = F.relu(output)
         return output
 
     def create_mask(self, x):
