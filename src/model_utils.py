@@ -186,22 +186,35 @@ class MolFeatureExtractor:
         return fitted_data
 
 
-def calculate_max_training_step(path_data) -> None:
-    batch_size, acc_batches, epochs = (
-        gin_qp("TFLoader.batch_size"),
+def calculate_training_steps(path_data, model_name:str) -> None:
+    if model_name == "Transformer":
+        batch_size = gin_qp("TFLoader.batch_size")
+    elif model_name == "RoBERTa":
+        batch_size = gin_qp("RoBERTaLoader.batch_size")
+    
+    acc_batches, epochs = (
         gin_qp("main.gradient_accum"),
         gin_qp("main.max_epoch"),
     )
     if not isinstance(batch_size, int):
-        batch_size = gin_qp("%batch_size")
+        batch_size = gin_qp("%batch_size_tf")
     dataframe_name, splits = gin_qp("%df_name"), gin_qp("%data_split")
     df = pd.read_csv(path_data / dataframe_name)
     len_train = df.shape[0] * splits[0]
     batches_per_gpu = math.ceil(len_train / float(batch_size))
-    train_steps = math.ceil(batches_per_gpu / acc_batches) * epochs
-    gin.bind_parameter(
-        "transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps
+    train_steps = int(math.ceil(batches_per_gpu / acc_batches) * epochs)
+    warmup_steps = int(math.ceil(batches_per_gpu / acc_batches) * 5)
+    if model_name == "Transformer":
+        gin.bind_parameter(
+            "Transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps
     )
+    elif model_name == "RoBERTa":
+        gin.bind_parameter(
+            "RoBERTa.configure_optimizers.num_training_steps", train_steps
+        )
+        gin.bind_parameter(
+            "RoBERTa.configure_optimizers.num_warmup_steps", warmup_steps
+        )
 
 
 def load_checkpointed_gin_config(checkpoint_path: Path, caller:str) -> None:

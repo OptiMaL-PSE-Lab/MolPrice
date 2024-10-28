@@ -3,12 +3,12 @@ import gin.torch.external_configurables
 include 'configs/dataloader.gin'
 
 # Training Parameters
-bin.train.main.max_epoch = 100
+bin.train.main.max_epoch = 50
 bin.train.main.early_stopping = True
 bin.train.main.patience = 20
 bin.train.main.no_gpus = 1
 bin.train.main.logging = False
-bin.train.main.gradient_accum = 2
+bin.train.main.gradient_accum = 4
 
 # Model Hyperparameters
 
@@ -16,7 +16,7 @@ bin.train.main.gradient_accum = 2
 lr = 1e-4
 weight_decay=5e-6
 
-lr_tf = 5e-5
+lr_tf = 1e-4
 decay_tf = 1e-3
 
 
@@ -53,21 +53,20 @@ Transformer.num_heads = 4
 Transformer.hidden_size = 600
 Transformer.num_layers = 3
 Transformer.dropout = 0.12
-Transformer.configure_optimizers.optimizer = @transformer/torch.optim.AdamW
-transformer/torch.optim.AdamW.lr = %lr_tf
-transformer/torch.optim.AdamW.weight_decay = %decay_tf
-Transformer.configure_optimizers.scheduler = @transformer/torch.optim.lr_scheduler.OneCycleLR
-transformer/torch.optim.lr_scheduler.OneCycleLR.max_lr = %lr_tf
-transformer/torch.optim.lr_scheduler.OneCycleLR.pct_start = 0.25
+Transformer.configure_optimizers.optimizer = @Transformer/torch.optim.AdamW
+Transformer/torch.optim.AdamW.lr = %lr_tf
+Transformer/torch.optim.AdamW.weight_decay = %decay_tf
+Transformer.configure_optimizers.scheduler = @Transformer/torch.optim.lr_scheduler.OneCycleLR
+Transformer/torch.optim.lr_scheduler.OneCycleLR.max_lr = %lr_tf
+Transformer/torch.optim.lr_scheduler.OneCycleLR.pct_start = 0.25
 # initial guess to be overwritten
-transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps = 1e6 
+Transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps = 1e6 
 
 RoBERTa.hidden_size = 300
 RoBERTa.dropout = 0.15
-RoBERTa.configure_optimizers.optimizer = @roberta/torch.optim.AdamW
-roberta/torch.optim.AdamW.lr = %lr
-roberta/torch.optim.AdamW.weight_decay = %weight_decay
-RoBERTa.configure_optimizers.scheduler = @roberta/torch.optim.lr_scheduler.LinearLR
-roberta/torch.optim.lr_scheduler.LinearLR.start_factor = 0.1
-roberta/torch.optim.lr_scheduler.LinearLR.end_factor = 1
-roberta/torch.optim.lr_scheduler.LinearLR.total_iters = 10
+RoBERTa.configure_optimizers.optimizer = @RoBERTa/torch.optim.AdamW
+RoBERTa/torch.optim.AdamW.lr = 1e-5
+RoBERTa/torch.optim.AdamW.weight_decay = %weight_decay
+# initial guess to be overwritten
+RoBERTa.configure_optimizers.num_warmup_steps = 1e5
+RoBERTa.configure_optimizers.num_training_steps = 5e6

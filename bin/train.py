@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
     from src.model import FgLSTM, TransformerEncoder, RoBERTaClassification, Fingerprints
     from src.model_utils import (
-        calculate_max_training_step,
+        calculate_training_steps,
         load_checkpointed_gin_config,
         load_model_from_checkpoint,
     )
@@ -202,11 +202,6 @@ if __name__ == "__main__":
         "Fingerprint": Fingerprints,
     }
 
-    if model_name == "Transformer":
-        calculate_max_training_step(
-            DATABASE_PATH
-        )  # * Specific to the scheduler used (i.e. OneCycleLR)
-
     if isinstance(args.cn, str):
         # * Load weights of model, hyperparameters from checkpoint config.txt (to allow for changes in hyperparameters)
         model = load_model_from_checkpoint(
@@ -244,6 +239,12 @@ if __name__ == "__main__":
         data_module = data_object(
             data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
         )
+
+    if model_name in ["Transformer", "RoBERTa"]:
+        calculate_training_steps(
+            DATABASE_PATH,
+            model_name
+        )  # * Specific to the scheduler used (i.e. OneCycleLR and WarmupLinear)
 
     gin.finalize()  # not allowing any more changes to the config
     main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore

@@ -83,29 +83,30 @@ class CustomDataLoader(LightningDataModule):
             self.data_split,
             generator=torch.Generator().manual_seed(42),
         )
-        if type(self).__name__ in ["TFLoader", "RoBERTaLoader"]:
-            # sort data in train_data by length and shuffle indices for faster training due to different lengths
-            initial_augment = self.augment
-            self.train_data.dataset.augment = False  # type: ignore
-            indices = sorted(
-                range(len(self.train_data)),
-                key=lambda x: len(self.train_data[x]["X"]),
-                reverse=True,
-            )
-            # shuffle indices according to batch_size
-            indices_groups = [
-                indices[i : i + self.batch_size]
-                for i in range(0, len(indices), self.batch_size)
-            ]
-            last_group = indices_groups.pop()
-            new_indices = [
-                item
-                for sublist in np.random.permutation(indices_groups)
-                for item in sublist
-            ]
-            new_indices.extend(last_group)
-            self.train_data.dataset.augment = initial_augment  # type: ignore
-            self.train_data = Subset(self.train_data, new_indices)
+        #TODO see if this is necessary
+        # if type(self).__name__ in ["TFLoader_ABC", "RoBERTaLoader_ABC"]:
+        #     # sort data in train_data by length and shuffle indices for faster training due to different lengths
+        #     initial_augment = self.augment
+        #     self.train_data.dataset.augment = False  # type: ignore
+        #     indices = sorted(
+        #         range(len(self.train_data)),
+        #         key=lambda x: len(self.train_data[x]["X"]),
+        #         reverse=True,
+        #     )
+        #     # shuffle indices according to batch_size
+        #     indices_groups = [
+        #         indices[i : i + self.batch_size]
+        #         for i in range(0, len(indices), self.batch_size)
+        #     ]
+        #     last_group = indices_groups.pop()
+        #     new_indices = [
+        #         item
+        #         for sublist in np.random.permutation(indices_groups)
+        #         for item in sublist
+        #     ]
+        #     new_indices.extend(last_group)
+        #     self.train_data.dataset.augment = initial_augment  # type: ignore
+        #     self.train_data = Subset(self.train_data, new_indices)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

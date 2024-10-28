@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
+from itertools import chain
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchmetrics import R2Score
@@ -420,6 +421,12 @@ class RoBERTaClassification(CustomModule):
         self.pretrained_model = RobertaModel.from_pretrained(
             "DeepChem/ChemBERTa-10M-MLM", config=self.config
         )
+        # for param in chain(
+        #     self.pretrained_model.encoder.parameters(), # type: ignore
+        #     self.pretrained_model.embeddings.parameters(), # type: ignore
+        # ):
+        #     param.requires_grad = False
+        #TODO: freezing weights or not?
         self.classifier = nn.Sequential(
             nn.Linear(self.config.hidden_size, hidden_size),
             nn.Dropout(dropout),
@@ -474,14 +481,20 @@ class RoBERTaClassification(CustomModule):
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return mse_loss
 
-    @gin.configurable(module="roberta")  # type: ignore
+    @gin.configurable(module="RoBERTa")  # type: ignore
     def configure_optimizers(
         self,
         optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        num_training_steps: int,
+        num_warmup_steps: int,
     ) -> OptimizerLRScheduler:
         opt = optimizer(self.parameters())  # type: ignore
-        scheduler = scheduler(opt)  # type: ignore
+        # code a scheduler that first warms up the learning rate and then decays it linearly
+        scheduler = get_linear_schedule_with_warmup(
+            opt,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
         return {
             "optimizer": opt,
             "lr_scheduler": {
