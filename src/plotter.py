@@ -86,7 +86,6 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
 
     if len(preds.keys()) == 2:
         preds_keys = list(preds.keys())
-        print(len(preds[preds_keys[0]]), type(preds[preds_keys[0]]))
         mcc, threshold = _mcc_calculator(preds[preds_keys[0]], preds[preds_keys[1]])
         hs_pred, es_pred = preds[preds_keys[0]], preds[preds_keys[1]]
         # preds_keys[0] has labels 1 and preds_keys[1] has labels 0

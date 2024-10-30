@@ -255,9 +255,15 @@ class Fingerprints(CustomModule):
         self.input_size = input_size
 
     def forward(self, x):
+        if self.loss_sep:
+            return self.forward_sep(x)
+        else:
+            return self.forward_normal(x)
+    
+    def forward_normal(self, x):
         x = self.neural_network(x)
         x = self.linear(x)
-        return x, x
+        return x
 
     def forward_sep(self, x):
         z = self.neural_network(x)
@@ -324,8 +330,8 @@ class Fingerprints(CustomModule):
         labels = batch["y"]
         inputs = batch["X"]
         labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
         if self.loss_sep:
-            output, z = self.forward_sep(inputs)
             total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
             self.log_dict(
                 {
@@ -338,7 +344,6 @@ class Fingerprints(CustomModule):
                 sync_dist=True,
             )
         else:
-            output, _ = self.forward(inputs)
             mse_loss = self.mse_loss(output, labels)
             total_loss = mse_loss
             self.log(
@@ -355,8 +360,8 @@ class Fingerprints(CustomModule):
         labels = batch["y"]
         inputs = batch["X"]
         labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
         if self.loss_sep:
-            output, z = self.forward_sep(inputs)
             total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
             self.log_dict(
                 {"val_mse": mse_loss, "val_contrastive": cont_loss},
@@ -367,8 +372,6 @@ class Fingerprints(CustomModule):
             output, _ = output.chunk(2, dim=0)
             labels, _ = labels.chunk(2, dim=0)
         else:
-            inputs = batch["X"]
-            output, _ = self.forward(inputs)
             total_loss = self.mse_loss(output, labels)
 
         r2_score = self.r2_score(output, labels)
@@ -384,8 +387,8 @@ class Fingerprints(CustomModule):
     def test_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
         labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
         if self.loss_sep:
-            output, z = self.forward_sep(inputs)
             total_loss, mse_loss, contrastive_loss = self.contrastive_loss(
                 z, output, labels
             )
@@ -398,7 +401,6 @@ class Fingerprints(CustomModule):
                 sync_dist=True,
             )
         else:
-            output, _ = self.forward(inputs)
             mse_loss = self.mse_loss(output, labels)
             total_loss = mse_loss
         self.test_predictions.append(output)

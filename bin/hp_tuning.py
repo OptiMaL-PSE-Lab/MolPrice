@@ -127,7 +127,7 @@ def objective_combined(trial: optuna.trial.Trial):
     model_checkpoint = CHECKPOINT_PATH / f"{fp_type}_tuning" 
     if not os.path.exists(model_checkpoint):
         raise FileNotFoundError(f"Model checkpoint {model_checkpoint} does not exist. Please train model first")
-    model = load_checkpointed_gin_config(model_checkpoint, "hp_tuning")
+    model = load_checkpointed_gin_config(model_checkpoint, "hp_tuning", True)
 
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
     feature_path = DATA_PATH / "features" / f"{current_dataset}/hp_tuning"

@@ -2,6 +2,7 @@ import gin
 import math
 import re
 import os
+import gin
 import numpy as np
 import pandas as pd
 import joblib
@@ -181,8 +182,6 @@ class MolFeatureExtractor:
             scalar = StandardScaler()
             fitted_data = scalar.fit_transform(features)
             joblib.dump(scalar, self.scaler_path / f"std.bin")
-            # * also dump the scaler in testing folder
-            joblib.dump(scalar, TEST_PATH / f"std.bin")
         return fitted_data
 
 
@@ -217,7 +216,11 @@ def calculate_training_steps(path_data, model_name:str) -> None:
         )
 
 
-def load_checkpointed_gin_config(checkpoint_path: Path, caller:str) -> None:
+def load_checkpointed_gin_config(checkpoint_path: Path, caller:str, combined: bool) -> None:
+    if combined: 
+        gin.constant("loss_sep", True)
+    else:
+        gin.constant("loss_sep", False)
     CONFIG_PATH = CHECKPOINT_PATH.joinpath(checkpoint_path)
     with open(CONFIG_PATH / "config_info.txt", "r") as f:
         lines = f.readlines()

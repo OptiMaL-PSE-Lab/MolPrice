@@ -27,6 +27,7 @@ from src.rdkit_ifg import identify_functional_groups as ifg
 from src.model_utils import Tokenizer, MolFeatureExtractor
 from src.datasets_torch import FGDataset, CombinedDataset
 from src.mhfp_encoder import MHFPEncoder
+from src.path_lib import DATA_PATH
 
 
 class CustomDataLoader(LightningDataModule):
@@ -83,30 +84,6 @@ class CustomDataLoader(LightningDataModule):
             self.data_split,
             generator=torch.Generator().manual_seed(42),
         )
-        #TODO see if this is necessary
-        # if type(self).__name__ in ["TFLoader_ABC", "RoBERTaLoader_ABC"]:
-        #     # sort data in train_data by length and shuffle indices for faster training due to different lengths
-        #     initial_augment = self.augment
-        #     self.train_data.dataset.augment = False  # type: ignore
-        #     indices = sorted(
-        #         range(len(self.train_data)),
-        #         key=lambda x: len(self.train_data[x]["X"]),
-        #         reverse=True,
-        #     )
-        #     # shuffle indices according to batch_size
-        #     indices_groups = [
-        #         indices[i : i + self.batch_size]
-        #         for i in range(0, len(indices), self.batch_size)
-        #     ]
-        #     last_group = indices_groups.pop()
-        #     new_indices = [
-        #         item
-        #         for sublist in np.random.permutation(indices_groups)
-        #         for item in sublist
-        #     ]
-        #     new_indices.extend(last_group)
-        #     self.train_data.dataset.augment = initial_augment  # type: ignore
-        #     self.train_data = Subset(self.train_data, new_indices)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -458,7 +435,7 @@ class FPLoader(CustomDataLoader):
     ) -> None:
         if fp_type == "mhfp":
             pickle_path = feature_path / f"features_FP_{fp_type}_{fp_size}_False.npz"
-        else: 
+        else:
             pickle_path = (
                 feature_path / f"features_FP_{fp_type}_{fp_size}_{count_simulation}.npz"
             )
@@ -537,7 +514,7 @@ class FPLoader(CustomDataLoader):
         fps = csr_matrix(fps)
         two_d_path = self.pickle_path.parent / "features_2D.npz"
         if self.two_d and not two_d_path.exists():
-            feature_extractor = MolFeatureExtractor(self.feature_path)
+            feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
             features = feature_extractor.encode(self.get_smiles())
             features = np.array(features)
             features = feature_extractor.standardise_features(features)
@@ -691,6 +668,7 @@ class TFLoader(CustomDataLoader):
         data_batch = data_batch.long()
         return {"X": data_batch, "y": y}
 
+
 @gin.configurable(denylist=["data_path", "feature_path"])  # type: ignore
 class RoBERTaLoader(CustomDataLoader):
     def __init__(
@@ -713,21 +691,22 @@ class RoBERTaLoader(CustomDataLoader):
             data_split,
             df_name,
             hp_tuning,
-            self.collate_fn
+            self.collate_fn,
         )
         self.vocab_path = None  # type: ignore
         self.tokenizer: RobertaTokenizer
         self.price: np.ndarray
         self.features: np.ndarray
 
-
     def generate_features(self):
-        #* as datagenerating is quick, no need to save data
+        # * as datagenerating is quick, no need to save data
         smiles = self.get_smiles()
         smiles = {"smi": smiles}
         custom_dataset = datasets.Dataset.from_dict(smiles)
         self.tokenizer = RobertaTokenizer.from_pretrained("DeepChem/ChemBERTa-10M-MLM")
-        encoded = custom_dataset.map(self._tokenize, batched=True, num_proc=self.workers_loader, batch_size=10000)
+        encoded = custom_dataset.map(
+            self._tokenize, batched=True, num_proc=self.workers_loader, batch_size=10000
+        )
         self.encoded = encoded["input_ids"]
         price = self.get_price()
         self.price = price
@@ -736,7 +715,6 @@ class RoBERTaLoader(CustomDataLoader):
         price = torch.from_numpy(self.price).float()
         features = [torch.Tensor(row) for row in self.encoded]
         return price, features, None
-        
 
     def _tokenize(self, examples):
         return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
@@ -747,6 +725,7 @@ class RoBERTaLoader(CustomDataLoader):
         data_batch = pad_sequence(data_batch, batch_first=True, padding_value=0)
         data_batch = data_batch.long()
         return {"X": data_batch, "y": y}
+
 
 # Data Loader explicitly used for testing on diverse datasets
 class TestLoader(LightningDataModule):
@@ -816,7 +795,7 @@ class TestLoader(LightningDataModule):
                     fps.append(fp)
 
             if two_d:
-                feature_extractor = MolFeatureExtractor(self.test_file.parent.parent)
+                feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
                 features = feature_extractor.encode(self.get_smiles())
                 features = np.array(features)
                 features = feature_extractor.standardise_features(features)

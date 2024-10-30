@@ -177,6 +177,6 @@ if __name__ == "__main__":
     CONFIG_PATH = CHECKPOINT_PATH.joinpath(args.cn).parent
 
     # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
-    load_checkpointed_gin_config(CONFIG_PATH, caller="test")
+    load_checkpointed_gin_config(CONFIG_PATH, caller="test", combined=args.combined)
 
     args.func(args, model, test_loader)

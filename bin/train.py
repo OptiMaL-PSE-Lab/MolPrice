@@ -181,9 +181,8 @@ if __name__ == "__main__":
 
     # Parsing gin configs depending on if checkpoint is used
     if args.cn:
-        gin.constant("loss_sep", True)
         gin_checkpoint = (CHECKPOINT_PATH / args.cn).parent
-        load_checkpointed_gin_config(gin_checkpoint, "train")
+        load_checkpointed_gin_config(gin_checkpoint, "train", args.combined)
     else:
         gin.constant("loss_sep", False)
         gin.parse_config_file(GIN_PATH_MODEL)
