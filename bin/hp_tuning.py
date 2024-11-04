@@ -113,127 +113,19 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
 
     return val_loss  # type: ignore
 
-def objective_combined(trial: optuna.trial.Trial):
-    # check if there is an activate wandb session
-    if wandb.run:
-        wandb.log({"pruned": 1})
-        wandb.finish()
-    
-    batch_size = trial.suggest_categorical("batch_size", [128, 256, 512])
-    fp_type = trial.suggest_categorical("fp_type", ["morgan", "rdkit", "mhfp", "atom"])
-    loss_hp = trial.suggest_float("loss_hp", 0.1, 0.9, step=0.1)
-
-    # load in checkpointed model
-    model_checkpoint = CHECKPOINT_PATH / f"{fp_type}_tuning" 
-    if not os.path.exists(model_checkpoint):
-        raise FileNotFoundError(f"Model checkpoint {model_checkpoint} does not exist. Please train model first")
-    model = load_checkpointed_gin_config(model_checkpoint, "hp_tuning", True)
-
-    current_dataset = gin.query_parameter("%df_name").split(".")[0]
-    feature_path = DATA_PATH / "features" / f"{current_dataset}/hp_tuning"
-    test_path = TEST_PATH / "gasa"
-    # create feature path if it does not exist
-    if not os.path.exists(feature_path):
-        raise FileNotFoundError(f"Feature path {feature_path} should exist as this code is using a pre-trained model.")
-
-    config = dict(trial.params)
-    config["trial_number"] = trial.number
-
-    # set up callbacks
-    save_path = path / "logs" / STUDY_NAME
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-
-    logger = WandbLogger(
-        project=STUDY_NAME,
-        config=config,
-        save_dir=save_path,
-        log_model=False,
-        reinit=True,
-    )
-    
-    es_loader = FPLoader(
-        data_path=DATABASE_PATH,
-        feature_path=feature_path,
-        batch_size=batch_size,
-        df_name="test_es.csv",
-        hp_tuning=True,
-        *gin.REQUIRED, # type: ignore
-    )
-        
-    hs_loader = FPLoader(
-        data_path=test_path,
-        feature_path=test_path,
-        batch_size=batch_size,
-        df_name = "test_hs.csv",
-        hp_tuning=True,
-        *gin.REQUIRED, # type: ignore
-    )
-    data_module = CombinedLoader(es_loader, hs_loader)
-
-    # set up the model
-    model = Fingerprints(
-        input_size=gin.REQUIRED, # type: ignore
-        hidden_size_1=gin.REQUIRED, # type: ignore
-        hidden_size_2=gin.REQUIRED, # type: ignore
-        hidden_size_3=gin.REQUIRED, # type: ignore
-        two_d=gin.REQUIRED, # type: ignore
-        dropout=gin.REQUIRED,# type: ignore
-        loss_sep=True, 
-        loss_hp=loss_hp, 
-    )
-
-    model = load_model_from_checkpoint(model, model_checkpoint)
-
-    trainer = Trainer(
-        logger=logger,
-        max_epochs=20,
-        accelerator="auto",
-        devices=1,
-        callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
-        enable_checkpointing=False,
-        log_every_n_steps=1000,
-        enable_progress_bar=False,
-    )
-
-    trainer.fit(model, datamodule=data_module)
-    # get the best validation loss from the model
-    val_summary = wandb.run.summary if wandb.run else None
-    if val_summary:
-        val_loss = val_summary["val_loss"]
-    else:
-        val_loss = 0.0
-
-    # log the final validation loss to wandb logger
-    logger.log_metrics({"pruned": 0})
-    wandb.finish()
-
-    return val_loss  # type: ignore
 
 if __name__ == "__main__":
     from src.path_lib import *
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--combined", action="store_true", help="Tune combined model")
-    args = parser.parse_args()
 
     gin.parse_config_file(GIN_PATH_DATALOADER)
 
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
     
-    if args.combined:
-        STUDY_NAME = "hp_tuning_combined"
-        study = optuna.create_study(
-            direction="minimize", pruner=pruner, study_name=STUDY_NAME
-        )
-        study.optimize(objective_single_price, n_trials=50)
-    else: 
-        STUDY_NAME = "hp_tuning_2"
-        study = optuna.create_study(
-            direction="minimize", pruner=pruner, study_name=STUDY_NAME
-        )
-        study.optimize(objective_single_price, n_trials=35)
+    STUDY_NAME = "hp_tuning_2"
+    study = optuna.create_study(
+        direction="minimize", pruner=pruner, study_name=STUDY_NAME
+    )
+    study.optimize(objective_single_price, n_trials=35)
 
 
     print("Number of finished trials: ", len(study.trials))

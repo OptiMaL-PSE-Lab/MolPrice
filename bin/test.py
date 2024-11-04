@@ -9,7 +9,7 @@ import lightning.pytorch as L
 from lightning.pytorch import LightningModule, LightningDataModule
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
 
-from src.plotter import plot_parity, plot_dist_overlap
+from src.plotter import plot_parity, plot_dist_overlap, plot_pca
 from src.data_loader import TestLoader
 from src.path_lib import *
 from src.model_utils import load_checkpointed_gin_config, load_model_from_checkpoint
@@ -68,16 +68,43 @@ def main_ood_test(
         for i, load in enumerate(loader):
             t_name = test_name[i].split("/")[-1]
             out = trainer.predict(loaded_model, load.test_dataloader())
+            out = unpack_outputs(out, False)
             outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
     else:
         t_name = args.test_name.split("/")[-1]
         out = trainer.predict(loaded_model, loader.test_dataloader())
+        out = unpack_outputs(out, False)
         outputs[f"{t_name}"] = torch.cat(out).numpy()  # type: ignore
 
     if args.plot:
         fig = plot_dist_overlap(outputs)
         fig.savefig(CONFIG_PATH / "dist_overlap.png", dpi=300)
 
+
+def main_pca(
+    args, 
+    model: LightningModule,
+    loader: list[LightningDataModule],
+):
+    """
+    This function takes in two distinct datasets and performs a PCA on the latent space 
+    """
+    loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
+    trainer = L.Trainer(
+        accelerator="auto", devices=find_usable_cuda_devices(), logger=False
+    )
+    outputs = {}
+    test_name = args.test_name.split(",")
+
+    for i, load in enumerate(loader):
+        t_name = test_name[i].split("/")[-1]
+        out = trainer.predict(loaded_model, load.test_dataloader())
+        out = unpack_outputs(out, True)
+        outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
+    
+    fig = plot_pca(outputs)
+    fig.savefig(CONFIG_PATH / "pca.png", dpi=300)
+    
 
 def add_shared_arguments(parser):
     """Function to add shared arguments to a parser."""
@@ -109,6 +136,19 @@ def add_shared_arguments(parser):
         action="store_true",
         help="If combined model has been used, activate --combined flag"
     )
+
+
+def unpack_outputs(outputs, pred_latent: bool):
+    """Function to unpack outputs from a test run"""
+    if isinstance(outputs[0], tuple):
+        preds = [out[0] for out in outputs]
+        latent = [out[1] for out in outputs]
+        if pred_latent:
+            return latent
+    else:
+        preds = outputs
+    return preds
+
 
 
 if __name__ == "__main__":
@@ -147,6 +187,17 @@ if __name__ == "__main__":
         required=True,
     )
     ood_parser.set_defaults(func=main_ood_test)
+
+    pca_parser = subparsers.add_parser("main_pca")
+    add_shared_arguments(pca_parser)
+    pca_parser.add_argument("--has_price", action="store_true")
+    pca_parser.add_argument(
+        "--test_name",
+        type=str,
+        help="Name of the test file(s) within ./testing, separated by comma",
+        required=True,
+    )
+    pca_parser.set_defaults(func=main_pca)
 
     args = parser.parse_args()
 
