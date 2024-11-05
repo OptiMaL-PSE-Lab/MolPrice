@@ -60,7 +60,8 @@ class CustomModule(L.LightningModule):
         self.log_dict({"rs": spearmean_corr, "r2_score": r2_score})
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0) -> list[torch.Tensor]:
-        if self == "FgLSTM":
+        class_name = self.__class__.__name__
+        if class_name == "FgLSTM":
             inputs, counts = batch["X"], batch["c"]
             return self(inputs, counts)
         else:
@@ -262,8 +263,10 @@ class Fingerprints(CustomModule):
     
     def forward_normal(self, x):
         x = self.neural_network(x)
+        # x = F.relu(x)
+        # x = F.dropout(x, 0.1)
         x = self.linear(x)
-        return x
+        return x, x
 
     def forward_sep(self, x):
         z = self.neural_network(x)

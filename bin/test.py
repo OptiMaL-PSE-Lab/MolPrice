@@ -23,7 +23,10 @@ def main_data_test(
 
     loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
     trainer = L.Trainer(
-        accelerator="auto", devices=find_usable_cuda_devices(), logger=False
+        accelerator="auto",
+        devices=find_usable_cuda_devices(),
+        logger=False,
+        limit_predict_batches=0.1,
     )
 
     out = trainer.test(loaded_model, loader.test_dataloader())
@@ -82,12 +85,12 @@ def main_ood_test(
 
 
 def main_pca(
-    args, 
+    args,
     model: LightningModule,
     loader: list[LightningDataModule],
 ):
     """
-    This function takes in two distinct datasets and performs a PCA on the latent space 
+    This function takes in two distinct datasets and performs a PCA on the latent space
     """
     loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
     trainer = L.Trainer(
@@ -101,10 +104,10 @@ def main_pca(
         out = trainer.predict(loaded_model, load.test_dataloader())
         out = unpack_outputs(out, True)
         outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
-    
+
     fig = plot_pca(outputs)
     fig.savefig(CONFIG_PATH / "pca.png", dpi=300)
-    
+
 
 def add_shared_arguments(parser):
     """Function to add shared arguments to a parser."""
@@ -113,7 +116,7 @@ def add_shared_arguments(parser):
         type=str,
         help="Model to test",
         required=True,
-        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint", "RoBERTa"],
     )
 
     parser.add_argument(
@@ -134,7 +137,7 @@ def add_shared_arguments(parser):
     parser.add_argument(
         "--combined",
         action="store_true",
-        help="If combined model has been used, activate --combined flag"
+        help="If combined model has been used, activate --combined flag",
     )
 
 
@@ -150,17 +153,22 @@ def unpack_outputs(outputs, pred_latent: bool):
     return preds
 
 
-
 if __name__ == "__main__":
     import argparse
 
-    from src.model import FgLSTM, TransformerEncoder, Fingerprints
+    from src.model import (
+        FgLSTM,
+        TransformerEncoder,
+        Fingerprints,
+        RoBERTaClassification,
+    )
     from src.data_loader import TestLoader
 
     model_dict = {
-        "FgLSTM": FgLSTM,
+        "LSTM": FgLSTM,
         "Transformer": TransformerEncoder,
         "Fingerprint": Fingerprints,
+        "RoBERTa": RoBERTaClassification,
     }
 
     parser = argparse.ArgumentParser()
@@ -201,14 +209,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    model = model_dict[args.model]
+    model_name = args.model.split("_")[0]
+    model = model_dict[model_name]
 
     test_paths = args.test_name.split(",")
     if len(test_paths) > 1:
         test_loader = [
             TestLoader(
                 TEST_PATH / test,
-                DATA_PATH,
+                DATABASE_PATH,
                 128,
                 model_name=args.model,
                 has_price=args.has_price,
@@ -218,7 +227,7 @@ if __name__ == "__main__":
     else:
         test_loader = TestLoader(
             TEST_PATH / args.test_name,
-            DATA_PATH,
+            DATABASE_PATH,
             128,
             model_name=args.model,
             has_price=args.has_price,

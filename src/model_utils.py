@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import joblib
 import torch
-from collections import defaultdict
 from gin import query_parameter as gin_qp
 from tqdm import tqdm
 from typing import Optional
@@ -42,11 +41,6 @@ class Tokenizer:
             return self._tokenize(smi)
 
     def encode(self, tokens: str | list[str]) -> list[int] | list[list[int]]:
-        if self.vocab:
-            vocab_len = len(self.vocab) 
-            vocab = defaultdict(lambda: vocab_len)
-            vocab.update(self.vocab) 
-            self.vocab = vocab
         if isinstance(tokens, list):
             return self._batch_encode(tokens)
         elif isinstance(tokens, str):
@@ -86,7 +80,7 @@ class Tokenizer:
         with Pool(processes=self.no_processes) as pool:
             tokenized = list(
                 tqdm(
-                    pool.imap(self.tokenize, smiles, chunksize=2 * self.no_processes),
+                    pool.imap(self._tokenize, smiles, chunksize=2 * self.no_processes),
                     total=self.dataset_size,
                 )
             )
@@ -97,7 +91,8 @@ class Tokenizer:
         if self.vocab is None:
             raise ValueError("Vocabulary not found. Please build vocabulary first.")
         # encode tokens
-        return [self.vocab[token] for token in token_list]
+        len_vocab = len(self.vocab)
+        return [self.vocab[token] if token in self.vocab else len_vocab for token in token_list]
 
     def _batch_encode(self, tokens: list[str]) -> list[list[int]]:
         with Pool(processes=6) as pool:
@@ -237,7 +232,8 @@ def load_checkpointed_gin_config(checkpoint_path: Path, caller:str, combined: bo
     os.remove(config_name)
 
 def load_model_from_checkpoint(model, checkpoint_path: Path):
-    ckpt_dict = torch.load(checkpoint_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt_dict = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt_dict["state_dict"]
     model = model(gin.REQUIRED)
     model.load_state_dict(state_dict, strict=False)

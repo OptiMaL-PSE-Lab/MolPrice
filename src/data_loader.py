@@ -280,15 +280,15 @@ class EFGLoader(CustomDataLoader):
             )
             backup_vocab = list(extra.values())
             atoms = a + b + backup_vocab
-            indeces = []
+            indices = []
             for atom in atoms:
                 if atom in vocab:
                     idx = vocab.index(atom)
-                    indeces.append(idx + 1)  # add 1 for padding
+                    indices.append(idx + 1)  # add 1 for padding
                 else:
                     idx = len(vocab)
-                    indeces.append(idx + 1)
-            return indeces
+                    indices.append(idx + 1)
+            return indices
         except:
             return []
 
@@ -397,22 +397,22 @@ class IFGLoader(CustomDataLoader):
 
     def _create_embeddings(self, smi: str) -> list[int]:
         """
-        Returns a list of indeces of positions in vocab
+        Returns a list of indices of positions in vocab
         """
         vocab = list(self.vocab.keys())  # type: ignore
         mol = Chem.MolFromSmiles(smi)  # type: ignore
         ifg_list = ifg(mol)
         atoms = [fg.atoms for fg in ifg_list]
-        indeces = []
+        indices = []
         for atom in atoms:
             if atom in vocab:
                 idx = vocab.index(atom)
-                indeces.append(idx + 1)
+                indices.append(idx + 1)
             else:
                 idx = len(vocab)
-                indeces.append(idx + 1)
+                indices.append(idx + 1)
 
-        return indeces
+        return indices
 
 
 # The loader for fingerprints of the molecules - most fingerprints share same signature in rdkit
@@ -727,7 +727,7 @@ class RoBERTaLoader(CustomDataLoader):
         return {"X": data_batch, "y": y}
 
 
-# Data Loader explicitly used for testing on diverse datasets
+# Data Loader explicitly used for testing and prediction on diverse datasets
 class TestLoader(LightningDataModule):
     def __init__(
         self,
@@ -743,10 +743,13 @@ class TestLoader(LightningDataModule):
         self.batch_size = batch_size
         self.model_name = model_name
         self.has_price = has_price
+        self.indices: Optional[list[int]] = None
         self.fp_size: int
 
     def prepare_data(self):
-
+        """
+        This method prepares the features, the code is similar to previous data loaders 
+        """
         # query standard configs from gin
         df_name = gin.query_parameter("%df_name")
         data_split = gin.query_parameter("%data_split")
@@ -757,7 +760,7 @@ class TestLoader(LightningDataModule):
         if self.model_name == "Fingerprint":
             fp_type = gin.query_parameter("FPLoader.fp_type")
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
-            count_sim = gin.query_parameter("FPLoader.count_simulation")
+            count_sim = gin.query_parameter("%count_simulation")
             self.fp_size = gin.query_parameter("%fp_size")
             two_d = gin.query_parameter("FPLoader.two_d")
             print(f"Creating feature vectors for {fp_type} fingerprint")
@@ -822,7 +825,23 @@ class TestLoader(LightningDataModule):
             tokenizer.load_vocab(vocab_path)
             print("Encoding tokens...")
             fps = tokenizer.encode(tokenized)
-            fps = torch.LongTensor(fps)
+            fps = [torch.Tensor(row) for row in fps]
+            fps = pad_sequence(fps, batch_first=True, padding_value=0).long()
+            fps = [fps, None]
+
+        elif self.model_name == "RoBERTa":
+            print("Creating features for RoBERTa")
+            smiles = {"smi": smiles}
+            custom_dataset = datasets.Dataset.from_dict(smiles)
+            self.tokenizer = RobertaTokenizer.from_pretrained(
+                "DeepChem/ChemBERTa-10M-MLM"
+            )
+            encoded = custom_dataset.map(
+                self._tokenize, batched=True, num_proc=10, batch_size=10000
+            )
+            fps = encoded["input_ids"]
+            fps = [torch.Tensor(row) for row in fps]
+            fps = pad_sequence(fps, batch_first=True, padding_value=0).long()
             fps = [fps, None]
 
         elif self.model_name[:4] == "LSTM":
@@ -851,6 +870,9 @@ class TestLoader(LightningDataModule):
                 raise ValueError("Model not supported")
 
             workers = lstm_loader.workers_loader
+            with open(lstm_loader.vocab_path, "rb") as f:
+                vocab = pickle.load(f)
+            lstm_loader.vocab = Manager().dict(vocab)
             with Pool(workers) as p:
                 features = list(
                     tqdm(
@@ -862,9 +884,9 @@ class TestLoader(LightningDataModule):
                         total=len(smiles),
                     )
                 )
-
-            #! watch out for this possible error
-            # price, features = zip(*[(price[idx], features[idx]) for idx, i in enumerate(features) if i])
+            self.indices, features = zip(
+                *[(idx, features[idx]) for idx, i in enumerate(features) if i]
+            )
             # count the occurence of features
             features = [Counter(f) for f in features]
             counts = [torch.Tensor(list(f.values())) for f in features]
@@ -885,6 +907,8 @@ class TestLoader(LightningDataModule):
         if self.has_price:
             df = pd.read_csv(self.test_file)
             price = df["price"].apply(np.log).to_list()
+            if self.indices:
+                price = [price[i] for i in self.indices]
         else:
             price = torch.FloatTensor(torch.zeros(first_feat.shape[0]))
         test_data = FGDataset(price, *features, vocab_path=None, smiles=None)  # type: ignore
@@ -902,6 +926,9 @@ class TestLoader(LightningDataModule):
 
     def _mhfp_features(self, smi: str) -> np.ndarray:
         return MHFPEncoder.secfp_from_smiles(smi, length=self.fp_size)
+
+    def _tokenize(self, examples):
+        return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
 
 
 class CombinedLoader(LightningDataModule):
@@ -939,27 +966,6 @@ class CombinedLoader(LightningDataModule):
             train_data, val_data, test_data = random_split(
                 dataset, loader.data_split, generator=torch.Generator().manual_seed(42)
             )
-            if type(loader).__name__ == "TFLoader":
-                # sort data in train_data by length and shuffle indices for faster training due to different lengths
-                indices = sorted(
-                    range(len(train_data)),
-                    key=lambda x: len(train_data[x]["X"]),
-                    reverse=True,
-                )
-                # shuffle indices according to batch_size
-                indices_groups = [
-                    indices[i : i + loader.batch_size]
-                    for i in range(0, len(indices), loader.batch_size)
-                ]
-                last_group = indices_groups.pop()
-                new_indices = [
-                    item
-                    for sublist in np.random.permutation(indices_groups)
-                    for item in sublist
-                ]
-                new_indices.extend(last_group)
-                train_data = Subset(train_data, new_indices)
-
             train_list.append(train_data)
             val_list.append(val_data)
             test_list.append(test_data)
@@ -976,24 +982,3 @@ class CombinedLoader(LightningDataModule):
 
     def test_dataloader(self) -> DataLoader:
         return self.loader_1.test_dataloader()
-
-
-if __name__ == "__main__":
-    root_dir = Path(__file__).parent.parent
-    data_path = root_dir / "data"
-    feature_path = data_path / "features"
-    df_name = "chemspace_reduced.txt"
-    batch_size = 32
-    workers_loader = 8
-    data_split = [0.8, 0.1, 0.1]
-    efgloader = IFGLoader(
-        data_path,
-        feature_path,
-        batch_size,
-        workers_loader,
-        data_split,
-        df_name,
-        hp_tuning=False,
-    )
-
-    efgloader.generate_features()
