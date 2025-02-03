@@ -8,13 +8,13 @@ bin.train.main.early_stopping = True
 bin.train.main.patience = 20
 bin.train.main.no_gpus = 1
 bin.train.main.logging = False
-bin.train.main.gradient_accum = 4
+bin.train.main.gradient_accum = 1
 
 # Model Hyperparameters
 
 # Constants 
-lr = 1e-4
-weight_decay=5e-6
+lr = 1.5e-4
+weight_decay=1e-4
 
 lr_tf = 1e-4
 decay_tf = 1e-3
@@ -35,11 +35,11 @@ lstm/torch.optim.Adam.lr = %lr
 lstm/torch.optim.Adam.weight_decay = %weight_decay
 
 FP.input_size = %fp_size
-FP.hidden_size_1 = 1024
+FP.hidden_size_1 = 512
 FP.hidden_size_2 = 256
 FP.hidden_size_3 = 124
-FP.dropout = 0.25
-FP.loss_hp = 0.35
+FP.dropout = 0.2
+FP.loss_hp = 0.7
 FP.loss_sep = %loss_sep
 FP.two_d = %two_d
 FP.configure_optimizers.optimizer = @fp/torch.optim.Adam

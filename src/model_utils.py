@@ -108,6 +108,7 @@ class Tokenizer:
 class MolFeatureExtractor:
     def __init__(self, scaler_path: Path):
         self.scaler_path = scaler_path
+        self.num_workers = os.cpu_count()
 
     def encode(self, smi: str | list[str]) -> list[tuple] | tuple:
         if isinstance(smi, list):
@@ -119,10 +120,10 @@ class MolFeatureExtractor:
         return self._calculate_2D_feat(smi)
 
     def _batch_encode(self, smiles: list[str]) -> list[tuple]:
-        with Pool(processes=10) as pool:
+        with Pool(processes=self.num_workers) as pool:
             encoded = list(
                 tqdm(
-                    pool.imap(self._encode, smiles, chunksize=20),
+                    pool.imap(self._encode, smiles, chunksize=10),
                     total=len(smiles),
                 )
             )

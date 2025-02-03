@@ -745,11 +745,27 @@ class TestLoader(LightningDataModule):
         self.has_price = has_price
         self.indices: Optional[list[int]] = None
         self.fp_size: int
+        self.num_workers = os.cpu_count()
 
     def prepare_data(self):
         """
         This method prepares the features, the code is similar to previous data loaders 
         """
+        #TODO Change once published
+        es_path = self.test_file.parent / "ES_features_FP_morgan_4096_False.npz"
+        hs_path = self.test_file.parent / "HS_features_FP_morgan_4096_False.npz"
+        # if es_path.exists() and hs_path.exists():
+        #     if "test_es" in str(self.test_file):
+        #         fps = load_npz(es_path)
+        #         features = load_npz(self.test_file.parent / "ES_features_2D.npz")
+        #         fps = hstack([fps, features])
+        #         return [fps, None]
+        #     elif "test_hs" in str(self.test_file):
+        #         fps = load_npz(hs_path)
+        #         features = load_npz(self.test_file.parent / "HS_features_2D.npz")
+        #         fps = hstack([fps, features])
+        #         return [fps, None]
+                
         # query standard configs from gin
         df_name = gin.query_parameter("%df_name")
         data_split = gin.query_parameter("%data_split")
@@ -760,7 +776,7 @@ class TestLoader(LightningDataModule):
         if self.model_name == "Fingerprint":
             fp_type = gin.query_parameter("FPLoader.fp_type")
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
-            count_sim = gin.query_parameter("%count_simulation")
+            count_sim = gin.query_parameter("FPLoader.count_simulation")
             self.fp_size = gin.query_parameter("%fp_size")
             two_d = gin.query_parameter("FPLoader.two_d")
             print(f"Creating feature vectors for {fp_type} fingerprint")
@@ -781,31 +797,31 @@ class TestLoader(LightningDataModule):
                     countSimulation=count_sim,
                 )
 
-            fps = []
-
             if fp_type == "mhfp":
-                with Pool(10) as p:
+                with Pool(self.num_workers) as p:
                     fps = list(
                         tqdm(
-                            p.imap(self._mhfp_features, smiles, chunksize=20),
+                            p.imap(self._mhfp_features, smiles, chunksize=10),
                             total=len(smiles),
                         )
                     )
+                fps = np.vstack(fps)
             else:
-                for s in tqdm(smiles):
+                fps = np.zeros((len(smiles), self.fp_size), dtype=np.uint8)
+                for i,s in enumerate(tqdm(smiles)):
                     mol = Chem.MolFromSmiles(s)  # type: ignore
                     fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-                    fps.append(fp)
+                    fps[i,:] = fp
 
             if two_d:
                 feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
                 features = feature_extractor.encode(self.get_smiles())
                 features = np.array(features)
                 features = feature_extractor.standardise_features(features)
-                # concatenate the two sparse matrices
-                fps = np.hstack([fps, features])
+                features = torch.from_numpy(features).float()
 
-            fps = torch.FloatTensor(fps)
+            fps = torch.from_numpy(fps).float()
+            fps = torch.hstack([fps, features]) if two_d else fps
             fps = [fps, None]
 
         elif self.model_name == "Transformer":
@@ -918,6 +934,7 @@ class TestLoader(LightningDataModule):
             batch_size=self.batch_size,
             num_workers=10,
             persistent_workers=True,
+            # collate_fn=self.collate_fn,
         )
 
     def get_smiles(self) -> list[str]:
@@ -929,6 +946,26 @@ class TestLoader(LightningDataModule):
 
     def _tokenize(self, examples):
         return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
+    
+    def collate_fn(self, batch):
+        # batch is sparse csr matrix -> convert to dense tensor
+        data_batch = batch[0]["X"]
+        if type(data_batch) == csr_matrix:
+            data_batch = data_batch.tocoo()
+            values = data_batch.data
+            indices = np.array((data_batch.row, data_batch.col))
+            shape = data_batch.shape
+            i, v, s = (
+                torch.LongTensor(indices),
+                torch.FloatTensor(values),
+                torch.Size(shape),  # type: ignore
+            )
+            X = torch.sparse.FloatTensor(i, v, s)  # type: ignore
+            X = X.to_dense()
+        else:
+            raise ValueError("Data type not supported")
+        
+        return {"X": X, "y": batch[0]["y"]}  # type: ignore
 
 
 class CombinedLoader(LightningDataModule):

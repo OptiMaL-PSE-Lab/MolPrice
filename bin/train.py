@@ -35,7 +35,8 @@ def main(
     today = date.today()
     hour = datetime.datetime.now().hour
     d = today.strftime("%m%d%Y")
-    checkpoint_path = args.checkpoint_path / f"{args.model}-{args.fp}-{d}-{hour}"
+    fp_type = gin.query_parameter("FPLoader.fp_type")
+    checkpoint_path = args.checkpoint_path / f"{args.model}-{fp_type}-{d}-{hour}"
     if not os.path.exists(checkpoint_path):
         os.mkdir(checkpoint_path)
 
@@ -101,7 +102,7 @@ def main(
             log_every_n_steps=500,
             enable_progress_bar=False,
         )
-
+    torch.manual_seed(42)
     trainer.fit(
         model,
         datamodule=data_module,
@@ -122,13 +123,25 @@ if __name__ == "__main__":
     import torch
     from argparse import ArgumentParser
 
-    from src.model import FgLSTM, TransformerEncoder, RoBERTaClassification, Fingerprints
+    from src.model import (
+        FgLSTM,
+        TransformerEncoder,
+        RoBERTaClassification,
+        Fingerprints,
+    )
     from src.model_utils import (
         calculate_training_steps,
         load_checkpointed_gin_config,
         load_model_from_checkpoint,
     )
-    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader, RoBERTaLoader, CombinedLoader
+    from src.data_loader import (
+        EFGLoader,
+        IFGLoader,
+        FPLoader,
+        TFLoader,
+        RoBERTaLoader,
+        CombinedLoader,
+    )
     from src.path_lib import *
 
     loader_dict = {
@@ -145,7 +158,7 @@ if __name__ == "__main__":
         type=str,
         help="Model to train",
         required=True,
-        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "RoBERTa","Fingerprint"],
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "RoBERTa", "Fingerprint"],
     )
     parser.add_argument(
         "--fingerprint_type",
@@ -221,7 +234,6 @@ if __name__ == "__main__":
         print("Using combined dataload. Only implemented for FP models for now.")
         # * for now default dataset given by GASA for HS
         feature_path = DATA_PATH / "features" / "molport_reduced"
-        feature_path = DATA_PATH / "features" / "molport_reduced"
         es_dataloader = data_object(
             data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
         )
@@ -241,8 +253,7 @@ if __name__ == "__main__":
 
     if model_name in ["Transformer", "RoBERTa"]:
         calculate_training_steps(
-            DATABASE_PATH,
-            model_name
+            DATABASE_PATH, model_name
         )  # * Specific to the scheduler used (i.e. OneCycleLR and WarmupLinear)
 
     gin.finalize()  # not allowing any more changes to the config

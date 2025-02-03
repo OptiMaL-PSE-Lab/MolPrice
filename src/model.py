@@ -66,7 +66,7 @@ class CustomModule(L.LightningModule):
             return self(inputs, counts)
         else:
             inputs = batch["X"]
-            return self(inputs)[0]
+            return self(inputs)
 
 
 # class to be used for EFG/IFG model
@@ -256,23 +256,8 @@ class Fingerprints(CustomModule):
         self.input_size = input_size
 
     def forward(self, x):
-        if self.loss_sep:
-            return self.forward_sep(x)
-        else:
-            return self.forward_normal(x)
-    
-    def forward_normal(self, x):
-        x = self.neural_network(x)
-        # x = F.relu(x)
-        # x = F.dropout(x, 0.1)
-        x = self.linear(x)
-        return x, x
-
-    def forward_sep(self, x):
         z = self.neural_network(x)
-        z = F.leaky_relu(z, 0.1)
-        x = F.dropout(z, 0.2)
-        x = self.linear(x)
+        x = self.linear(z)
         return x, z
 
     @gin.configurable(module="FP")  # type: ignore
@@ -286,12 +271,12 @@ class Fingerprints(CustomModule):
         z_es, z_hs = z.chunk(2, dim=0)
         es_label, _ = labels.chunk(2, dim=0)
         es_out, hs_out = out.chunk(2, dim=0)
-        cont_loss = self.cosine_similarity_loss(z_hs, z_es, 0)
         mse_loss = self.mse_loss(es_out, es_label)
-        total_loss = self.loss_hp * mse_loss + (1 - self.loss_hp) * cont_loss
+        cont_loss = self.hellinger_distance(z_hs, z_es)
+        total_loss = mse_loss + 0.05 * cont_loss
         return total_loss, mse_loss, cont_loss
 
-    def cosine_similarity_loss(self, h_HS, h_ES, lambda_val):
+    def cosine_similarity_loss(self, h_HS, h_ES):
         # Normalize the embeddings to have unit norm (for cosine similarity)
         h_HS = F.normalize(h_HS, p=2, dim=1)  # Shape: (B_HS, N)
         h_ES = F.normalize(h_ES, p=2, dim=1)  # Shape: (B_ES, N)
@@ -324,10 +309,19 @@ class Fingerprints(CustomModule):
         )  # Minimize cosine similarity between HS and ES
 
         # Total loss
-        total_loss = (
-            intra_loss_HS + intra_loss_ES + 2 * inter_loss
-        )  # + (entropy_loss_hs + entropy_loss_es)
+        total_loss = intra_loss_HS + intra_loss_ES + 2 * inter_loss
         return total_loss
+
+    def hellinger_distance(self, z_es, z_hs):
+        eps = 1e-8
+        z_es_mu, z_es_std = z_es.mean(dim=0) + eps, z_es.std(dim=0) + eps
+        z_hs_mu, z_hs_std = z_hs.mean(dim=0) + eps, z_hs.std(dim=0) + eps
+        # for each dimensions, calculate the hellinger distance
+        z_hellinger = torch.sum(
+            torch.sqrt(2 * z_es_std * z_hs_std / (z_es_std**2 + z_hs_std**2))
+            * torch.exp(-0.25 * (z_es_mu - z_hs_mu) ** 2 / (z_es_std**2 + z_hs_std**2))
+        )
+        return z_hellinger
 
     def training_step(self, batch, batch_idx):
         labels = batch["y"]
@@ -426,12 +420,6 @@ class RoBERTaClassification(CustomModule):
         self.pretrained_model = RobertaModel.from_pretrained(
             "DeepChem/ChemBERTa-10M-MLM", config=self.config
         )
-        # for param in chain(
-        #     self.pretrained_model.encoder.parameters(), # type: ignore
-        #     self.pretrained_model.embeddings.parameters(), # type: ignore
-        # ):
-        #     param.requires_grad = False
-        #TODO: freezing weights or not?
         self.classifier = nn.Sequential(
             nn.Linear(self.config.hidden_size, hidden_size),
             nn.Dropout(dropout),

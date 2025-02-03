@@ -4,6 +4,7 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
+from sklearn.decomposition import PCA
 
 import datashader as ds
 from datashader.mpl_ext import dsshow
@@ -62,7 +63,7 @@ def plot_parity(logits: np.ndarray, labels: np.ndarray, r2score: float):
 
 def plot_dist_overlap(preds: dict[str, np.ndarray]):
     """Plot overlapping distribution of prices in multiple datasets"""
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(8, 4), layout="constrained")
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 4), layout="constrained")
     default_colour = [
         "tab:blue",
         "tab:orange",
@@ -71,12 +72,14 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
         "tab:purple",
     ]
     for i, (key, prices) in enumerate(preds.items()):
+        keys = ["HS", "ES"]
+        key = keys[i]
         weights = np.ones_like(prices) * 100 / len(prices)
         ax.hist(
             prices,
             bins=100,
             weights=weights,
-            range=(1, 20),
+            range=(3, 15),
             label=key,
             color=default_colour[i],
             alpha=0.4,
@@ -99,18 +102,22 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
             np.concatenate([hs_pred, es_pred]),
         )
         print(f"ROC AUC: {roc_auc:.3f}")
-        # calculate accuracy 
-        accuracy = (len(pos_true) + len(neg_true)) / (len(pos_true) + len(neg_true) + len(pos_false) + len(neg_false))
-        f1_score = 2 * len(pos_true) / (2 * len(pos_true) + len(pos_false) + len(neg_false))
+        # calculate accuracy
+        accuracy = (len(pos_true) + len(neg_true)) / (
+            len(pos_true) + len(neg_true) + len(pos_false) + len(neg_false)
+        )
+        f1_score = (
+            2 * len(pos_true) / (2 * len(pos_true) + len(pos_false) + len(neg_false))
+        )
         print(f"F1 Score: {f1_score:.3f}")
         print(f"Accuracy: {accuracy:.3f}")
         ax.text(
-            0.95,
-            0.95,
+            0.8,
+            0.92,
             f"$MCC$: {mcc:.3f}",
             fontsize=12,
             transform=ax.transAxes,
-            bbox=dict(facecolor="white", alpha=0.5),
+            bbox=dict(facecolor="white", alpha=0.5, boxstyle="round"),
         )
 
         # draw vertical line at optimal threshold
@@ -123,6 +130,27 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
     ax.spines["top"].set_visible(False)
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
+    return fig
+
+
+def plot_pca(preds: dict[str, np.ndarray]):
+    pca = PCA(n_components=3)
+    # concatenate all the predictions
+    all_preds = np.concatenate([pred for pred in preds.values()], axis=0)
+    fig = plt.figure(figsize=(8, 6), layout="constrained")
+    ax = plt.axes(projection="3d")
+    pca.fit(all_preds)
+    for key, pred in preds.items():
+        pred_pca = pca.transform(pred)
+        ax.scatter3D(
+            pred_pca[:, 0], pred_pca[:, 1], pred_pca[:, 2], label=key, alpha=0.3
+        )
+
+    ax.set_xlabel("PCA Component 1", fontsize=13)
+    ax.set_ylabel("PCA Component 2", fontsize=13)
+    ax.set_zlabel("PCA Component 3", fontsize=13)
+    ax.legend()
+    print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
     return fig
 
 

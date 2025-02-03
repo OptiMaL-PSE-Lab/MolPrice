@@ -22,3 +22,4 @@ scripts/train_model.sh.o**
 # testing
 models/**/**.png 
 rf/
+testing/**

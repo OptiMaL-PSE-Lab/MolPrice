@@ -5,7 +5,7 @@ data_split = [0.9, 0.05, 0.05]
 df_name = "molport_reduced.txt"
 
 # Quick accessible FP features
-fp_size = 2048
+fp_size = 4096
 count_simulation = False
 two_d = False
 
@@ -33,7 +33,7 @@ TFLoader.batch_size = %batch_size_tf
 TFLoader.workers_loader = 10
 TFLoader.data_split = %data_split
 TFLoader.df_name = %df_name
-TFLoader.augment = True
+TFLoader.augment = False
 
 RoBERTaLoader.batch_size = %batch_size_tf
 RoBERTaLoader.workers_loader = 10
