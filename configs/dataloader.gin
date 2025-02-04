@@ -1,8 +1,13 @@
 # Default batch size that can be overwritten based on Tuner
-batch_size = 128
+batch_size = 512
+batch_size_tf = 32
 data_split = [0.9, 0.05, 0.05]
 df_name = "molport_reduced.txt"
-fp_size = 2048
+
+# Quick accessible FP features
+fp_size = 4096
+count_simulation = False
+two_d = False
 
 EFGLoader.batch_size = %batch_size
 EFGLoader.workers_loader = 10
@@ -17,13 +22,20 @@ IFGLoader.df_name = %df_name
 FPLoader.fp_type = 'morgan'
 FPLoader.fp_size = %fp_size
 FPLoader.p_r_size = 3
-FPLoader.count_simulation = True
+FPLoader.count_simulation = %count_simulation
+FPLoader.two_d = %two_d
 FPLoader.batch_size = %batch_size
 FPLoader.workers_loader = 0
 FPLoader.data_split = %data_split
 FPLoader.df_name = %df_name
 
-TFLoader.batch_size = %batch_size
+TFLoader.batch_size = %batch_size_tf
 TFLoader.workers_loader = 10
 TFLoader.data_split = %data_split
 TFLoader.df_name = %df_name
+TFLoader.augment = False
+
+RoBERTaLoader.batch_size = %batch_size_tf
+RoBERTaLoader.workers_loader = 10
+RoBERTaLoader.data_split = %data_split
+RoBERTaLoader.df_name = %df_name

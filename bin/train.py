@@ -1,25 +1,25 @@
 import os
 import gin
-import pytorch_lightning as L
+import lightning.pytorch as L
 import datetime
 from datetime import date
-from pytorch_lightning.loggers import WandbLogger, CSVLogger
-from pytorch_lightning.callbacks import (
+import gin.torch.external_configurables
+from lightning.pytorch.loggers import WandbLogger, CSVLogger
+from lightning.pytorch.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
     LearningRateMonitor,
 )
-from pytorch_lightning import LightningModule
+from lightning.pytorch import LightningModule
 
 from src.data_loader import CustomDataLoader
-import gin.torch.external_configurables
 
 # For running on cluster - slow connection to wandb
 os.environ["WANDB_INIT_TIMEOUT"] = "1000"
 os.environ["WANDB_HTTP_TIMEOUT"] = "1000"
 
 
-@gin.configurable
+@gin.configurable(module="bin.train")
 def main(
     args,
     model: LightningModule,
@@ -35,7 +35,8 @@ def main(
     today = date.today()
     hour = datetime.datetime.now().hour
     d = today.strftime("%m%d%Y")
-    checkpoint_path = args.checkpoint_path / f"{args.model}-{args.fp}-{d}-{hour}"
+    fp_type = gin.query_parameter("FPLoader.fp_type")
+    checkpoint_path = args.checkpoint_path / f"{args.model}-{fp_type}-{d}-{hour}"
     if not os.path.exists(checkpoint_path):
         os.mkdir(checkpoint_path)
 
@@ -67,7 +68,7 @@ def main(
     # initialize logger
     if logging:
         logger = WandbLogger(
-            project="graphfg",
+            project="price_molport",
             name=f"{args.model}-{args.fp}-{d}-{hour}",
             log_model="all",
             save_dir=args.log_path,
@@ -101,7 +102,7 @@ def main(
             log_every_n_steps=500,
             enable_progress_bar=False,
         )
-
+    torch.manual_seed(42)
     trainer.fit(
         model,
         datamodule=data_module,
@@ -122,9 +123,25 @@ if __name__ == "__main__":
     import torch
     from argparse import ArgumentParser
 
-    from src.model import FgLSTM, TransformerEncoder, Fingerprints
-    from src.model_utils import calculate_max_training_step
-    from src.data_loader import EFGLoader, IFGLoader, FPLoader, TFLoader
+    from src.model import (
+        FgLSTM,
+        TransformerEncoder,
+        RoBERTaClassification,
+        Fingerprints,
+    )
+    from src.model_utils import (
+        calculate_training_steps,
+        load_checkpointed_gin_config,
+        load_model_from_checkpoint,
+    )
+    from src.data_loader import (
+        EFGLoader,
+        IFGLoader,
+        FPLoader,
+        TFLoader,
+        RoBERTaLoader,
+        CombinedLoader,
+    )
     from src.path_lib import *
 
     loader_dict = {
@@ -132,6 +149,7 @@ if __name__ == "__main__":
         "LSTM_IFG": IFGLoader,
         "Fingerprint": FPLoader,
         "Transformer": TFLoader,
+        "RoBERTa": RoBERTaLoader,
     }
 
     parser = ArgumentParser()
@@ -140,7 +158,7 @@ if __name__ == "__main__":
         type=str,
         help="Model to train",
         required=True,
-        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "Fingerprint"],
+        choices=["LSTM_EFG", "LSTM_IFG", "Transformer", "RoBERTa", "Fingerprint"],
     )
     parser.add_argument(
         "--fingerprint_type",
@@ -149,7 +167,7 @@ if __name__ == "__main__":
         type=str,
         help="Type of fingerprint to use",
         required=False,
-        choices=["morgan", "rdkit", "atom"],
+        choices=["morgan", "rdkit", "atom", "mhfp"],
         default="morgan",
     )
 
@@ -163,34 +181,80 @@ if __name__ == "__main__":
         default=None,
     )
 
+    parser.add_argument(
+        "--combined",
+        action="store_true",
+        help="Whether to use combined dataloaders to train via contrastive learning",
+    )
+
+    # Parsing args
     args = parser.parse_args()
     args.checkpoint_path = CHECKPOINT_PATH
     args.log_path = path / "logs"
-    gin.parse_config_file(GIN_PATH_DATALOADER)
-    gin.bind_parameter("FPLoader.fp_type", args.fp)
+
+    # Parsing gin configs depending on if checkpoint is used
+    if args.cn:
+        gin_checkpoint = (CHECKPOINT_PATH / args.cn).parent
+        load_checkpointed_gin_config(gin_checkpoint, "train", args.combined)
+    else:
+        gin.constant("loss_sep", False)
+        gin.parse_config_file(GIN_PATH_MODEL)
+        gin.bind_parameter("FPLoader.fp_type", args.fp)
+
+    # Querying current dataset used for training
     current_dataset = gin.query_parameter("%df_name").split(".")[0]
     feature_path = DATA_PATH / "features" / current_dataset
 
-    data_object = loader_dict[args.model]
-    data_module = data_object(
-        data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
-    )
-
-    # parse model gin file after data_object has been loaded
-    gin.parse_config_file(GIN_PATH_MODEL)
-    calculate_max_training_step(
-        DATABASE_PATH
-    )  # * Specific to the scheduler used (i.e. OneCycleLR)
-    gin.finalize()
+    # Initialising models from checkpoint or from scratch
     model_name = args.model.split("_")[0]
     model_dict = {
         "LSTM": FgLSTM,
         "Transformer": TransformerEncoder,
+        "RoBERTa": RoBERTaClassification,
         "Fingerprint": Fingerprints,
     }
+
     if isinstance(args.cn, str):
-        model = model_dict[model_name].load_from_checkpoint(CHECKPOINT_PATH / args.cn)
+        # * Load weights of model, hyperparameters from checkpoint config.txt (to allow for changes in hyperparameters)
+        model = load_model_from_checkpoint(
+            model_dict[model_name], CHECKPOINT_PATH / args.cn
+        )
+        if args.combined and args.model == "Fingerprint":
+            # * Freeze the last layer weights to learn proper latent space representation
+            model.linear.weight.requires_grad = False
         print("Model loaded - training resumes.")
     else:
-        model = model_dict[model_name](gin.REQUIRED)
+        model = model_dict[model_name](
+            gin.REQUIRED
+        )  # loaded hps from model_configs.gin
+
+    # Dataloader and Model initialization depending on combined behaviour
+    data_object = loader_dict[args.model]
+    if args.combined:
+        print("Using combined dataload. Only implemented for FP models for now.")
+        # * for now default dataset given by GASA for HS
+        feature_path = DATA_PATH / "features" / "molport_reduced"
+        es_dataloader = data_object(
+            data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+        )
+        hs_path = TEST_PATH / "gasa"
+        hs_dataloader = data_object(
+            data_path=hs_path,
+            feature_path=hs_path,
+            hp_tuning=False,
+            df_name="test_hs.csv",
+        )
+        data_module = CombinedLoader(es_dataloader, hs_dataloader)
+    else:
+        data_object = loader_dict[args.model]
+        data_module = data_object(
+            data_path=DATABASE_PATH, feature_path=feature_path, hp_tuning=False
+        )
+
+    if model_name in ["Transformer", "RoBERTa"]:
+        calculate_training_steps(
+            DATABASE_PATH, model_name
+        )  # * Specific to the scheduler used (i.e. OneCycleLR and WarmupLinear)
+
+    gin.finalize()  # not allowing any more changes to the config
     main(args, model=model, data_module=data_module, max_epoch=gin.REQUIRED, early_stopping=gin.REQUIRED, patience=gin.REQUIRED, no_gpus=gin.REQUIRED, logging=gin.REQUIRED)  # type: ignore

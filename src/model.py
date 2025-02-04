@@ -1,11 +1,12 @@
 import gin
 import math
-import pytorch_lightning as L
+import lightning.pytorch as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from itertools import chain
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchmetrics import R2Score
 from torchmetrics.regression import (
@@ -13,6 +14,7 @@ from torchmetrics.regression import (
     MeanAbsoluteError,
     SpearmanCorrCoef,
 )
+from transformers import RobertaConfig, RobertaModel, get_linear_schedule_with_warmup
 
 # User warning for key_padding mask as shown in commit fc94c90
 import warnings
@@ -58,7 +60,8 @@ class CustomModule(L.LightningModule):
         self.log_dict({"rs": spearmean_corr, "r2_score": r2_score})
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0) -> list[torch.Tensor]:
-        if self == "FgLSTM":
+        class_name = self.__class__.__name__
+        if class_name == "FgLSTM":
             inputs, counts = batch["X"], batch["c"]
             return self(inputs, counts)
         else:
@@ -98,7 +101,6 @@ class FgLSTM(CustomModule):
         lstm_size: float,
     ):
         super().__init__()
-        self.save_hyperparameters(ignore="input_size, count_size")
         self.hidden_lstm = hidden_lstm
         self.hidden1_nn = hidden1_nn
         self.hidden2_nn = hidden2_nn
@@ -178,7 +180,7 @@ class FgLSTM(CustomModule):
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         self.log(
-            "train_loss",
+            "train_mse",
             loss,
             on_step=True,
             on_epoch=True,
@@ -211,7 +213,7 @@ class FgLSTM(CustomModule):
         self.test_labels.append(labels)
         mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return mse_loss
 
@@ -226,8 +228,15 @@ class Fingerprints(CustomModule):
         hidden_size_2: int,
         hidden_size_3: int,
         dropout: float,
+        loss_hp: float,
+        loss_sep: bool,
+        two_d: bool,  # whether dataloader included 2D info in fingerprint
     ):
+
         super(Fingerprints, self).__init__()
+        if two_d:
+            input_size += 10
+
         self.neural_network = nn.Sequential(
             nn.Linear(input_size, hidden_size_1),
             nn.ReLU(),
@@ -238,13 +247,18 @@ class Fingerprints(CustomModule):
             nn.Linear(hidden_size_2, hidden_size_3),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size_3, 1),
+            nn.Linear(hidden_size_3, 10),
         )
-        self.save_hyperparameters()  #! Comment line for hp_tuning
+        self.linear = nn.Linear(10, 1)
+        self.loss_hp = loss_hp
+        self.loss_sep = loss_sep
+        self.dropout = dropout
+        self.input_size = input_size
 
     def forward(self, x):
-        x = self.neural_network(x)
-        return x
+        z = self.neural_network(x)
+        x = self.linear(z)
+        return x, z
 
     @gin.configurable(module="FP")  # type: ignore
     def configure_optimizers(
@@ -253,13 +267,179 @@ class Fingerprints(CustomModule):
         opt = optimizer(self.parameters())  # type: ignore
         return opt
 
+    def contrastive_loss(self, z, out, labels):
+        z_es, z_hs = z.chunk(2, dim=0)
+        es_label, _ = labels.chunk(2, dim=0)
+        es_out, hs_out = out.chunk(2, dim=0)
+        mse_loss = self.mse_loss(es_out, es_label)
+        cont_loss = self.hellinger_distance(z_hs, z_es)
+        total_loss = mse_loss + 0.05 * cont_loss
+        return total_loss, mse_loss, cont_loss
+
+    def cosine_similarity_loss(self, h_HS, h_ES):
+        # Normalize the embeddings to have unit norm (for cosine similarity)
+        h_HS = F.normalize(h_HS, p=2, dim=1)  # Shape: (B_HS, N)
+        h_ES = F.normalize(h_ES, p=2, dim=1)  # Shape: (B_ES, N)
+
+        # Intra-class cosine similarity (HS-to-HS and ES-to-ES)
+        cosine_sim_HS = torch.mm(h_HS, h_HS.t())  # Shape: (B_HS, B_HS)
+        cosine_sim_ES = torch.mm(h_ES, h_ES.t())  # Shape: (B_ES, B_ES)
+        # take absolute value
+        cosine_sim_HS = torch.abs(cosine_sim_HS)
+        cosine_sim_ES = torch.abs(cosine_sim_ES)
+
+        # Avoid self-similarity in the intra-class loss (mask the diagonal)
+        mask_HS = torch.eye(h_HS.size(0), device=h_HS.device).bool()
+        mask_ES = torch.eye(h_ES.size(0), device=h_ES.device).bool()
+
+        intra_loss_HS = (
+            1 - cosine_sim_HS.masked_select(~mask_HS).mean()
+        )  # Maximize cosine similarity for HS
+        intra_loss_ES = (
+            1 - cosine_sim_ES.masked_select(~mask_ES).mean()
+        )  # Maximize cosine similarity for ES
+
+        # Inter-class cosine similarity (HS-to-ES)
+        cosine_sim_inter = torch.mm(h_HS, h_ES.t())  # Shape: (B_HS, B_ES)
+        cosine_sim_inter = 1 + cosine_sim_inter
+
+        # Minimize inter-class cosine similarity
+        inter_loss = (
+            cosine_sim_inter.mean()
+        )  # Minimize cosine similarity between HS and ES
+
+        # Total loss
+        total_loss = intra_loss_HS + intra_loss_ES + 2 * inter_loss
+        return total_loss
+
+    def hellinger_distance(self, z_es, z_hs):
+        eps = 1e-8
+        z_es_mu, z_es_std = z_es.mean(dim=0) + eps, z_es.std(dim=0) + eps
+        z_hs_mu, z_hs_std = z_hs.mean(dim=0) + eps, z_hs.std(dim=0) + eps
+        # for each dimensions, calculate the hellinger distance
+        z_hellinger = torch.sum(
+            torch.sqrt(2 * z_es_std * z_hs_std / (z_es_std**2 + z_hs_std**2))
+            * torch.exp(-0.25 * (z_es_mu - z_hs_mu) ** 2 / (z_es_std**2 + z_hs_std**2))
+        )
+        return z_hellinger
+
+    def training_step(self, batch, batch_idx):
+        labels = batch["y"]
+        inputs = batch["X"]
+        labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
+        if self.loss_sep:
+            total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
+            self.log_dict(
+                {
+                    "train_total": total_loss,
+                    "train_mse": mse_loss,
+                    "train_contrastive": cont_loss,
+                },
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        else:
+            mse_loss = self.mse_loss(output, labels)
+            total_loss = mse_loss
+            self.log(
+                "train_mse",
+                mse_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                sync_dist=True,
+            )
+        return total_loss
+
+    def validation_step(self, batch, batch_idx):
+        labels = batch["y"]
+        inputs = batch["X"]
+        labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
+        if self.loss_sep:
+            total_loss, mse_loss, cont_loss = self.contrastive_loss(z, output, labels)
+            self.log_dict(
+                {"val_mse": mse_loss, "val_contrastive": cont_loss},
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+            output, _ = output.chunk(2, dim=0)
+            labels, _ = labels.chunk(2, dim=0)
+        else:
+            total_loss = self.mse_loss(output, labels)
+
+        r2_score = self.r2_score(output, labels)
+        if wandb.run:
+            if self.trainer.global_step == 0:
+                wandb.define_metric("val_mse", summary="min")
+                wandb.define_metric("r2_score", summary="max")
+
+        scores_to_log = {"val_loss": total_loss, "r2_score": r2_score}
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
+        return total_loss
+
+    def test_step(self, batch, batch_idx):
+        inputs, labels = batch["X"], batch["y"]
+        labels = labels.view(-1, 1)
+        output, z = self.forward(inputs)
+        if self.loss_sep:
+            total_loss, mse_loss, contrastive_loss = self.contrastive_loss(
+                z, output, labels
+            )
+            # only log cont loss here
+            self.log(
+                "test_contrastive",
+                contrastive_loss,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
+        else:
+            mse_loss = self.mse_loss(output, labels)
+            total_loss = mse_loss
+        self.test_predictions.append(output)
+        self.test_labels.append(labels)
+        mae_loss = self.mae_loss(output, labels)
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
+        return total_loss
+
+
+@gin.configurable("RoBERTa")  # type:ignore
+class RoBERTaClassification(CustomModule):
+    def __init__(
+        self,
+        hidden_size: int,
+        dropout: float,
+    ):
+        super(RoBERTaClassification, self).__init__()
+        self.config = RobertaConfig.from_pretrained("DeepChem/ChemBERTa-10M-MLM")
+        self.pretrained_model = RobertaModel.from_pretrained(
+            "DeepChem/ChemBERTa-10M-MLM", config=self.config
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(self.config.hidden_size, hidden_size),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, 1),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        out = self.pretrained_model(x)[1]
+        out = self.dropout(out)
+        out = self.classifier(out)
+        return out
+
     def training_step(self, batch, batch_idx):
         inputs, labels = batch["X"], batch["y"]
         output = self.forward(inputs)
         labels = labels.view(-1, 1)
         loss = self.mse_loss(output, labels)
         self.log(
-            "train_loss",
+            "train_mse",
             loss,
             on_step=True,
             on_epoch=True,
@@ -276,11 +456,10 @@ class Fingerprints(CustomModule):
         r2_score = self.r2_score(output, labels)
         if wandb.run:
             if self.trainer.global_step == 0:
-                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("val_mse", summary="min")
                 wandb.define_metric("r2_score", summary="max")
-
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -291,9 +470,31 @@ class Fingerprints(CustomModule):
         self.test_labels.append(labels)
         mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
-        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
+        self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
         return mse_loss
+
+    @gin.configurable(module="RoBERTa")  # type: ignore
+    def configure_optimizers(
+        self,
+        optimizer: torch.optim.Optimizer,
+        num_training_steps: int,
+        num_warmup_steps: int,
+    ) -> OptimizerLRScheduler:
+        opt = optimizer(self.parameters())  # type: ignore
+        # code a scheduler that first warms up the learning rate and then decays it linearly
+        scheduler = get_linear_schedule_with_warmup(
+            opt,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+        )
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,  # scheduler is LinearLR from gin file
+                "interval": "step",  # The scheduler updates the learning rate after each epoch
+            },
+        }
 
 
 # class to be used for SMILES model
@@ -319,7 +520,10 @@ class TransformerEncoder(CustomModule):
             ]
         )
         self.fc = nn.Linear(embedding_size, 1)
-        self.save_hyperparameters(ignore="input_size")
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.embedding.weight)
+        nn.init.xavier_uniform_(self.fc.weight)
 
     def forward(self, x) -> torch.Tensor:
         embedded = self.embedding(
@@ -335,11 +539,10 @@ class TransformerEncoder(CustomModule):
 
         cls_hidden_state = embedded.max(dim=1)[0]  # (N_batch, embedding_size)
         output = self.fc(cls_hidden_state)
-        output = F.relu(output)
         return output
 
     def create_mask(self, x):
-        #! Assumes that masking token is 0 i.e. padding token
+        # * Assumes that masking token is 0 i.e. padding token
         mask = torch.gt(x, 0)
         # convert mask tensor to boolean list not of type Tensor, but type bool
         mask = mask.bool()
@@ -371,7 +574,7 @@ class TransformerEncoder(CustomModule):
         # convert output to floatTensor
         loss = self.mse_loss(output, labels)  # type: ignore
         self.log(
-            "train_loss",
+            "train_mse",
             loss,
             on_step=True,
             on_epoch=True,
@@ -388,7 +591,7 @@ class TransformerEncoder(CustomModule):
         r2_score = self.r2_score(output, labels)
         if wandb.run:
             if self.trainer.global_step == 0:
-                wandb.define_metric("val_loss", summary="min")
+                wandb.define_metric("val_mse", summary="min")
                 wandb.define_metric("r2_score", summary="max")
         scores_to_log = {"val_loss": loss, "r2_score": r2_score}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)
@@ -402,7 +605,7 @@ class TransformerEncoder(CustomModule):
         self.test_labels.append(labels)
         mse_loss = self.mse_loss(output, labels)
         mae_loss = self.mae_loss(output, labels)
-        scores_to_log = {"mse_loss": mse_loss, "mae_loss": mae_loss}
+        scores_to_log = {"test_mse": mse_loss, "test_mae": mae_loss}
         self.log_dict(scores_to_log, on_step=False, on_epoch=True, sync_dist=True)  # type: ignore
         return mse_loss
 
