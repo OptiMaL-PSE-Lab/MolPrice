@@ -1,6 +1,8 @@
 import gin
 import math
 import re
+import ray
+from itertools import islice
 import os
 import gin
 import numpy as np
@@ -110,26 +112,45 @@ class MolFeatureExtractor:
         self.scaler_path = scaler_path
         self.num_workers = os.cpu_count()
 
-    def encode(self, smi: str | list[str]) -> list[tuple] | tuple:
+    def encode(self, smi: str | list[str]) -> np.ndarray:
         if isinstance(smi, list):
             return self._batch_encode(smi)
         elif isinstance(smi, str):
-            return self._encode(smi)
+            return MolFeatureExtractor._calculate_2D_feat(smi) # type: ignore
+    
+    @staticmethod # type: ignore
+    @ray.remote
+    def _encode(smis: str) -> tuple:
+        return [MolFeatureExtractor._calculate_2D_feat(smi) for smi in smis] # type: ignore
+    
+    def _batches(self, it, chunk_size: int):
+        it = iter(it)
+        return iter(lambda: list(islice(it, chunk_size)), [])
 
-    def _encode(self, smi: str) -> tuple:
-        return self._calculate_2D_feat(smi)
 
-    def _batch_encode(self, smiles: list[str]) -> list[tuple]:
-        with Pool(processes=self.num_workers) as pool:
-            encoded = list(
-                tqdm(
-                    pool.imap(self._encode, smiles, chunksize=10),
-                    total=len(smiles),
-                )
-            )
-        return encoded
+    def _batch_encode(self, smiles: list[str]) -> np.ndarray:
+        ray.init(num_gpus=0)
+        batch_size = 4 * 1024 * int(ray.cluster_resources()['CPU'])
+        size = len(smiles)
+        n_batches = size//batch_size + 1
+        chunksize = int(ray.cluster_resources()['CPU'] * 16)
+        features = np.zeros((size, 10), dtype=np.uint8)
+        i = 0
+        for smis_batch in tqdm(self._batches(smiles, batch_size), total=n_batches):
+            refs = [
+                MolFeatureExtractor._encode.remote(mols_chunk) # type: ignore
+                for mols_chunk in self._batches(smis_batch, chunksize)
+            ]
+            two_d_chunks = [ray.get(r) for r in tqdm(
+                refs, desc='Calculating 2D descriptors', unit='chunk', leave=False
+            )]
+            two_d_chunks = np.vstack(two_d_chunks)
+            features[i:i+len(smis_batch)] = two_d_chunks
+        ray.shutdown()
+        return features
 
-    def _calculate_2D_feat(self, smi):
+    @staticmethod
+    def _calculate_2D_feat(smi):
         mol = Chem.MolFromSmiles(smi)
         sp3 = rdMolDescriptors.CalcFractionCSP3(mol)
         sps = SpacialScore.SPS(mol)
@@ -139,8 +160,8 @@ class MolFeatureExtractor:
         heterocyc = rdMolDescriptors.CalcNumHeterocycles(mol)
         no_spiro = rdMolDescriptors.CalcNumSpiroAtoms(mol)
         no_bridgehead = rdMolDescriptors.CalcNumBridgeheadAtoms(mol)
-        n_macro, n_multi = self.numMacroAndMulticycle(mol, mol.GetNumAtoms())
-        return (
+        n_macro, n_multi = MolFeatureExtractor.numMacroAndMulticycle(mol, mol.GetNumAtoms())
+        return np.array([
             sp3,
             sps,
             stereo,
@@ -151,9 +172,10 @@ class MolFeatureExtractor:
             no_bridgehead,
             n_macro,
             n_multi,
-        )
+        ])
 
-    def numMacroAndMulticycle(self, mol, nAtoms):
+    @staticmethod
+    def numMacroAndMulticycle(mol, nAtoms):
         ri = mol.GetRingInfo()  # type: ignore
         nMacrocycles = 0
         multi_ring_atoms = {i: 0 for i in range(nAtoms)}

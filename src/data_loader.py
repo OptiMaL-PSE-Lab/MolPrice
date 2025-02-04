@@ -1,4 +1,5 @@
 import pickle
+import ray
 import os
 from abc import abstractmethod
 from collections import Counter
@@ -6,6 +7,7 @@ from multiprocessing import Pool, Manager, cpu_count
 from pathlib import Path
 from tqdm import tqdm
 from typing import Optional, Generator, Callable
+from itertools import islice
 
 import datasets
 import gin
@@ -452,10 +454,10 @@ class FPLoader(CustomDataLoader):
         )
 
         self.fp_type = fp_type
-        self.fp_size = fp_size  # the size of the fingerprint vector
+        self.fp_size = fp_size  # the size of the fp_type vector
         self.p_r_size = p_r_size  # the length of the path/radius
-        self.two_d = two_d  # whether to use 2D info in addition to fingerprint
-        self.count = count_simulation  # whether to use count fingerprint
+        self.two_d = two_d  # whether to use 2D info in addition to fp_type
+        self.count = count_simulation  # whether to use count fp_type
         self.vocab_path = None  # type: ignore
         self.price_path = self.pickle_path.parent / "fp_prices.pkl.npz"
 
@@ -473,50 +475,17 @@ class FPLoader(CustomDataLoader):
         if os.path.exists(self.pickle_path):
             return
 
-        print(f"Creating feature vectors for {self.fp_type} fingerprint")
+        print(f"Creating feature vectors for {self.fp_type} fp_type")
         # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
-        if self.fp_type == "morgan":
-            self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
-                radius=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
-            )
-        elif self.fp_type == "rdkit":
-            self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
-                maxPath=self.p_r_size, fpSize=self.fp_size, countSimulation=self.count
-            )
-        elif self.fp_type == "atom":
-            self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
-                maxDistance=self.p_r_size,
-                fpSize=self.fp_size,
-                countSimulation=self.count,
-            )
-        elif self.fp_type == "mhfp":
-            pass
-        else:
-            raise ValueError("Fingerprint type not supported")
-
-        if self.fp_type == "mhfp":
-            with Pool(os.cpu_count()) as p:
-                fps = list(
-                    tqdm(
-                        p.imap(self._mhfp_features, self.get_smiles(), chunksize=20),
-                        total=len(self.get_smiles()),
-                    )
-                )
-        else:
-            fps = []
-            for smi in self.get_batch_smiles(100000):
-                for s in smi:
-                    mol = Chem.MolFromSmiles(s)  # type: ignore
-                    fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-                    fps.append(fp)
-
-        fps = np.array(fps, dtype=np.uint8)
+        smiles = self.get_smiles()
+        fps = self._smis_to_fps(
+            smiles, self.fp_type, self.p_r_size, self.fp_size, self.count
+        )
         fps = csr_matrix(fps)
         two_d_path = self.pickle_path.parent / "features_2D.npz"
         if self.two_d and not two_d_path.exists():
             feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
             features = feature_extractor.encode(self.get_smiles())
-            features = np.array(features)
             features = feature_extractor.standardise_features(features)
             features = csr_matrix(features)
             # concatenate the two sparse matrices
@@ -527,8 +496,38 @@ class FPLoader(CustomDataLoader):
             price = self.get_price()
             np.savez_compressed(self.price_path, price=price, allow_pickle=True)
 
-    def _mhfp_features(self, smi: str) -> np.ndarray:
-        return MHFPEncoder.secfp_from_smiles(smi, length=self.fp_size)
+    def _batches(self, it, chunk_size: int):
+        it = iter(it)
+        return iter(lambda: list(islice(it, chunk_size)), [])
+
+    def _smis_to_fps(
+        self, smis, fp_type: str, radius: int, length: int, count_sim: bool
+    ):
+
+        ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
+        batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
+        size = len(smis)
+        n_batches = size // batch_size + 1
+        chunksize = int(ray.cluster_resources()["CPU"] * 16)
+        fps = np.zeros((size, length), dtype=np.uint8)
+        i = 0
+        for smis_batch in tqdm(self._batches(smis, batch_size), total=n_batches):
+            refs = [
+                _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim)  # type: ignore
+                for mols_chunk in self._batches(smis_batch, chunksize)
+            ]
+            fps_chunks = [
+                ray.get(r)
+                for r in tqdm(
+                    refs, desc="Calculating fingerprints", unit="chunk", leave=False
+                )
+            ]
+            fps_chunks = np.vstack(fps_chunks)
+            fps[i : i + len(smis_batch)] = fps_chunks
+            i += len(smis_batch)
+
+        ray.shutdown()
+        return fps
 
     # * Overwrite due to sparse matrix manipulation needed to load in FPs
     def train_dataloader(self) -> DataLoader:
@@ -749,9 +748,9 @@ class TestLoader(LightningDataModule):
 
     def prepare_data(self):
         """
-        This method prepares the features, the code is similar to previous data loaders 
+        This method prepares the features, the code is similar to previous data loaders
         """
-        #TODO Change once published
+        # TODO Change once published
         es_path = self.test_file.parent / "ES_features_FP_morgan_4096_False.npz"
         hs_path = self.test_file.parent / "HS_features_FP_morgan_4096_False.npz"
         # if es_path.exists() and hs_path.exists():
@@ -765,7 +764,7 @@ class TestLoader(LightningDataModule):
         #         features = load_npz(self.test_file.parent / "HS_features_2D.npz")
         #         fps = hstack([fps, features])
         #         return [fps, None]
-                
+
         # query standard configs from gin
         df_name = gin.query_parameter("%df_name")
         data_split = gin.query_parameter("%data_split")
@@ -776,47 +775,15 @@ class TestLoader(LightningDataModule):
         if self.model_name == "Fingerprint":
             fp_type = gin.query_parameter("FPLoader.fp_type")
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
-            count_sim = gin.query_parameter("FPLoader.count_simulation")
+            count_sim = gin.query_parameter("%count_simulation")
             self.fp_size = gin.query_parameter("%fp_size")
             two_d = gin.query_parameter("FPLoader.two_d")
-            print(f"Creating feature vectors for {fp_type} fingerprint")
+            print(f"Creating feature vectors for {fp_type} fp_type")
 
-            if fp_type == "morgan":
-                # * The higher the fp_size, the larger the memory requirements -> use sparse vector object instead
-                self.fp_gen = rdFingerprintGenerator.GetMorganGenerator(
-                    radius=p_r_size, fpSize=self.fp_size, countSimulation=count_sim
-                )
-            elif fp_type == "rdkit":
-                self.fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
-                    maxPath=p_r_size, fpSize=self.fp_size, countSimulation=count_sim
-                )
-            elif fp_type == "atom":
-                self.fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
-                    maxDistance=p_r_size,
-                    fpSize=self.fp_size,
-                    countSimulation=count_sim,
-                )
-
-            if fp_type == "mhfp":
-                with Pool(self.num_workers) as p:
-                    fps = list(
-                        tqdm(
-                            p.imap(self._mhfp_features, smiles, chunksize=10),
-                            total=len(smiles),
-                        )
-                    )
-                fps = np.vstack(fps)
-            else:
-                fps = np.zeros((len(smiles), self.fp_size), dtype=np.uint8)
-                for i,s in enumerate(tqdm(smiles)):
-                    mol = Chem.MolFromSmiles(s)  # type: ignore
-                    fp = self.fp_gen.GetFingerprintAsNumPy(mol)
-                    fps[i,:] = fp
-
+            fps = self._smis_to_fps(smiles, fp_type, p_r_size, self.fp_size, count_sim)
             if two_d:
                 feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
                 features = feature_extractor.encode(self.get_smiles())
-                features = np.array(features)
                 features = feature_extractor.standardise_features(features)
                 features = torch.from_numpy(features).float()
 
@@ -917,7 +884,7 @@ class TestLoader(LightningDataModule):
         return fps
 
     def test_dataloader(self) -> DataLoader:
-        print("preparing features for testing")
+        print("Preparing Features for Testing")
         features = self.prepare_data()
         first_feat = features[0]
         if self.has_price:
@@ -941,12 +908,42 @@ class TestLoader(LightningDataModule):
         df = pd.read_csv(self.test_file)
         return df["smi_can"].to_list()
 
-    def _mhfp_features(self, smi: str) -> np.ndarray:
-        return MHFPEncoder.secfp_from_smiles(smi, length=self.fp_size)
-
     def _tokenize(self, examples):
         return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
-    
+
+    def _batches(self, it, chunk_size: int):
+        it = iter(it)
+        return iter(lambda: list(islice(it, chunk_size)), [])
+
+    def _smis_to_fps(
+        self, smis, fp_type: str, radius: int, length: int, count_sim: bool
+    ):
+
+        ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
+        batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
+        size = len(smis)
+        n_batches = size // batch_size + 1
+        chunksize = int(ray.cluster_resources()["CPU"] * 16)
+        fps = np.zeros((size, length), dtype=np.uint8)
+        i = 0
+        for smis_batch in tqdm(self._batches(smis, batch_size), total=n_batches):
+            refs = [
+                _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim)  # type: ignore
+                for mols_chunk in self._batches(smis_batch, chunksize)
+            ]
+            fps_chunks = [
+                ray.get(r)
+                for r in tqdm(
+                    refs, desc="Calculating fingerprints", unit="chunk", leave=False
+                )
+            ]
+            fps_chunks = np.vstack(fps_chunks)
+            fps[i : i + len(smis_batch)] = fps_chunks
+            i += len(smis_batch)
+
+        ray.shutdown()
+        return fps
+
     def collate_fn(self, batch):
         # batch is sparse csr matrix -> convert to dense tensor
         data_batch = batch[0]["X"]
@@ -964,7 +961,7 @@ class TestLoader(LightningDataModule):
             X = X.to_dense()
         else:
             raise ValueError("Data type not supported")
-        
+
         return {"X": X, "y": batch[0]["y"]}  # type: ignore
 
 
@@ -1019,3 +1016,26 @@ class CombinedLoader(LightningDataModule):
 
     def test_dataloader(self) -> DataLoader:
         return self.loader_1.test_dataloader()
+
+
+@ray.remote
+def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
+    "Speed up of fp_type generation with ray"
+    mols = [Chem.MolFromSmiles(smi) for smi in smis]
+
+    if fp_type == "morgan":
+        fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+            radius=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "rdkit":
+        fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
+            maxPath=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "atom":
+        fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
+            maxDistance=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "mhfp":
+        return [MHFPEncoder.secfp_from_mol(mol, length=fp_size) for mol in mols]
+
+    return [fp_gen.GetFingerprintAsNumPy(mol) for mol in mols]
