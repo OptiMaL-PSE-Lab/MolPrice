@@ -116,7 +116,8 @@ class MolFeatureExtractor:
         if isinstance(smi, list):
             return self._batch_encode(smi)
         elif isinstance(smi, str):
-            return MolFeatureExtractor._calculate_2D_feat(smi) # type: ignore
+            feat = MolFeatureExtractor._calculate_2D_feat(smi) # type: ignore
+            return np.expand_dims(feat, axis=0)
     
     @staticmethod # type: ignore
     @ray.remote
@@ -129,7 +130,7 @@ class MolFeatureExtractor:
 
 
     def _batch_encode(self, smiles: list[str]) -> np.ndarray:
-        ray.init(num_gpus=0)
+        ray.init(num_gpus=0, log_to_driver=False)
         batch_size = 4 * 1024 * int(ray.cluster_resources()['CPU'])
         size = len(smiles)
         n_batches = size//batch_size + 1

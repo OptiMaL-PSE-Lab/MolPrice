@@ -730,14 +730,14 @@ class RoBERTaLoader(CustomDataLoader):
 class TestLoader(LightningDataModule):
     def __init__(
         self,
-        test_file: Path,
+        test_mol: str,
         data_path: Path,
         batch_size: int,
         model_name: str,
         has_price: bool,
     ):
         super().__init__()
-        self.test_file = test_file
+        self.test_mol = test_mol
         self.data_path = data_path
         self.batch_size = batch_size
         self.model_name = model_name
@@ -751,39 +751,43 @@ class TestLoader(LightningDataModule):
         This method prepares the features, the code is similar to previous data loaders
         """
         # TODO Change once published
-        es_path = self.test_file.parent / "ES_features_FP_morgan_4096_False.npz"
-        hs_path = self.test_file.parent / "HS_features_FP_morgan_4096_False.npz"
-        # if es_path.exists() and hs_path.exists():
-        #     if "test_es" in str(self.test_file):
-        #         fps = load_npz(es_path)
-        #         features = load_npz(self.test_file.parent / "ES_features_2D.npz")
-        #         fps = hstack([fps, features])
-        #         return [fps, None]
-        #     elif "test_hs" in str(self.test_file):
-        #         fps = load_npz(hs_path)
-        #         features = load_npz(self.test_file.parent / "HS_features_2D.npz")
-        #         fps = hstack([fps, features])
-        #         return [fps, None]
 
-        # query standard configs from gin
-        df_name = gin.query_parameter("%df_name")
-        data_split = gin.query_parameter("%data_split")
+        if ".csv" in self.test_mol:
+            # es_path = self.test_mol.parent / "ES_features_FP_morgan_4096_False.npz"
+            # hs_path = self.test_mol.parent / "HS_features_FP_morgan_4096_False.npz"
+            # if es_path.exists() and hs_path.exists():
+            #     if "test_es" in str(self.test_file):
+            #         fps = load_npz(es_path)
+            #         features = load_npz(self.test_file.parent / "ES_features_2D.npz")
+            #         fps = hstack([fps, features])
+            #         return [fps, None]
+            #     elif "test_hs" in str(self.test_file):
+            #         fps = load_npz(hs_path)
+            #         features = load_npz(self.test_file.parent / "HS_features_2D.npz")
+            #         fps = hstack([fps, features])
+            #         return [fps, None]
 
-        # get smiles from data frame
-        smiles = self.get_smiles()
+            # query standard configs from gin
+            df_name = gin.query_parameter("%df_name")
+            data_split = gin.query_parameter("%data_split")
+
+            # get smiles from data frame
+            smiles = self.get_smiles()
+        else:
+            smiles = self.test_mol
 
         if self.model_name == "Fingerprint":
             fp_type = gin.query_parameter("FPLoader.fp_type")
             p_r_size = gin.query_parameter("FPLoader.p_r_size")
             count_sim = gin.query_parameter("%count_simulation")
             self.fp_size = gin.query_parameter("%fp_size")
-            two_d = gin.query_parameter("FPLoader.two_d")
+            two_d = gin.query_parameter("%two_d")
             print(f"Creating feature vectors for {fp_type} fp_type")
-
+            
             fps = self._smis_to_fps(smiles, fp_type, p_r_size, self.fp_size, count_sim)
             if two_d:
                 feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
-                features = feature_extractor.encode(self.get_smiles())
+                features = feature_extractor.encode(smiles)
                 features = feature_extractor.standardise_features(features)
                 features = torch.from_numpy(features).float()
 
@@ -888,7 +892,7 @@ class TestLoader(LightningDataModule):
         features = self.prepare_data()
         first_feat = features[0]
         if self.has_price:
-            df = pd.read_csv(self.test_file)
+            df = pd.read_csv(self.test_mol)
             price = df["price"].apply(np.log).to_list()
             if self.indices:
                 price = [price[i] for i in self.indices]
@@ -905,7 +909,7 @@ class TestLoader(LightningDataModule):
         )
 
     def get_smiles(self) -> list[str]:
-        df = pd.read_csv(self.test_file)
+        df = pd.read_csv(self.test_mol)
         return df["smi_can"].to_list()
 
     def _tokenize(self, examples):
@@ -918,28 +922,30 @@ class TestLoader(LightningDataModule):
     def _smis_to_fps(
         self, smis, fp_type: str, radius: int, length: int, count_sim: bool
     ):
-
-        ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
-        batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
-        size = len(smis)
-        n_batches = size // batch_size + 1
-        chunksize = int(ray.cluster_resources()["CPU"] * 16)
-        fps = np.zeros((size, length), dtype=np.uint8)
-        i = 0
-        for smis_batch in tqdm(self._batches(smis, batch_size), total=n_batches):
-            refs = [
-                _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim)  # type: ignore
-                for mols_chunk in self._batches(smis_batch, chunksize)
-            ]
-            fps_chunks = [
-                ray.get(r)
-                for r in tqdm(
-                    refs, desc="Calculating fingerprints", unit="chunk", leave=False
-                )
-            ]
-            fps_chunks = np.vstack(fps_chunks)
-            fps[i : i + len(smis_batch)] = fps_chunks
-            i += len(smis_batch)
+        if isinstance(smis, str):
+            return mols_to_fps(smis, length, radius, fp_type, count_sim) # type: ignore
+        else:
+            ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
+            batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
+            size = len(smis)
+            n_batches = size // batch_size + 1
+            chunksize = int(ray.cluster_resources()["CPU"] * 16)
+            fps = np.zeros((size, length), dtype=np.uint8)
+            i = 0
+            for smis_batch in tqdm(self._batches(smis, batch_size), total=n_batches):
+                refs = [
+                    _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim)  # type: ignore
+                    for mols_chunk in self._batches(smis_batch, chunksize)
+                ]
+                fps_chunks = [
+                    ray.get(r)
+                    for r in tqdm(
+                        refs, desc="Calculating fingerprints", unit="chunk", leave=False
+                    )
+                ]
+                fps_chunks = np.vstack(fps_chunks)
+                fps[i : i + len(smis_batch)] = fps_chunks
+                i += len(smis_batch)
 
         ray.shutdown()
         return fps
@@ -1039,3 +1045,24 @@ def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
         return [MHFPEncoder.secfp_from_mol(mol, length=fp_size) for mol in mols]
 
     return [fp_gen.GetFingerprintAsNumPy(mol) for mol in mols]
+
+def mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
+    "Speed up of fp_type generation with ray"
+    mol = Chem.MolFromSmiles(smis)
+
+    if fp_type == "morgan":
+        fp_gen = rdFingerprintGenerator.GetMorganGenerator(
+            radius=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "rdkit":
+        fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(
+            maxPath=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "atom":
+        fp_gen = rdFingerprintGenerator.GetAtomPairGenerator(
+            maxDistance=p_r_size, fpSize=fp_size, countSimulation=count_sim
+        )
+    elif fp_type == "mhfp":
+        return np.expand_dims(MHFPEncoder.secfp_from_mol(mol, length=fp_size), axis=0)
+
+    return np.expand_dims(fp_gen.GetFingerprintAsNumPy(mol), axis=0)
