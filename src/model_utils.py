@@ -147,6 +147,7 @@ class MolFeatureExtractor:
             )]
             two_d_chunks = np.vstack(two_d_chunks)
             features[i:i+len(smis_batch)] = two_d_chunks
+            i += len(smis_batch)
         ray.shutdown()
         return features
 
