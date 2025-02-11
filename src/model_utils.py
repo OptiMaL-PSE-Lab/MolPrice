@@ -137,7 +137,7 @@ class MolFeatureExtractor:
         size = len(smiles)
         n_batches = size // batch_size + 1
         chunksize = int(ray.cluster_resources()["CPU"] * 16)
-        features = np.zeros((size, 10), dtype=np.float16)
+        features = np.zeros((size, 10), dtype=np.float32)
         i = 0
         for smis_batch in tqdm(self._batches(smiles, batch_size), total=n_batches):
             refs = [
