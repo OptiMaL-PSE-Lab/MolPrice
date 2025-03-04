@@ -8,7 +8,6 @@ datasets.txt
 # directories
 figs/
 logs/
-data_splits/
 # models
 models/**/**txt
 models/**/**.ckpt
@@ -18,8 +17,9 @@ models/**/**.ckpt
 **.csv
 # hpc outpou
 scripts/train_model.sh.o**
+scripts/run**
 
 # testing
 models/**/**.png 
-rf/
 testing/**
+misc/** 

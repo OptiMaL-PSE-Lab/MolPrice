@@ -10,6 +10,8 @@ import datashader as ds
 from datashader.mpl_ext import dsshow
 from datashader.transfer_functions import dynspread
 
+DEFAULT_COLOURS = ["#117733", "#CC6677"]
+
 
 def plot_parity(logits: np.ndarray, labels: np.ndarray, r2score: float):
     "Plot parity plot of model predictions"
@@ -64,15 +66,8 @@ def plot_parity(logits: np.ndarray, labels: np.ndarray, r2score: float):
 def plot_dist_overlap(preds: dict[str, np.ndarray]):
     """Plot overlapping distribution of prices in multiple datasets"""
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 4), layout="constrained")
-    default_colour = [
-        "tab:blue",
-        "tab:orange",
-        "tab:green",
-        "tab:red",
-        "tab:purple",
-    ]
+    keys = ["HS", "ES"]
     for i, (key, prices) in enumerate(preds.items()):
-        keys = ["HS", "ES"]
         key = keys[i]
         weights = np.ones_like(prices) * 100 / len(prices)
         ax.hist(
@@ -81,7 +76,7 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
             weights=weights,
             range=(3, 15),
             label=key,
-            color=default_colour[i],
+            color=DEFAULT_COLOURS[i],
             alpha=0.4,
             lw=1,
             edgecolor="black",
@@ -106,9 +101,9 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
         accuracy = (len(pos_true) + len(neg_true)) / (
             len(pos_true) + len(neg_true) + len(pos_false) + len(neg_false)
         )
-        f1_score = (
-            2 * len(pos_true) / (2 * len(pos_true) + len(pos_false) + len(neg_false))
-        )
+        precision = len(pos_true) / (len(pos_true) + len(pos_false))
+        recall = len(pos_true) / (len(pos_true) + len(neg_false))
+        f1_score = 2 * precision * recall / (precision + recall)
         print(f"F1 Score: {f1_score:.3f}")
         print(f"Accuracy: {accuracy:.3f}")
         ax.text(
@@ -130,25 +125,56 @@ def plot_dist_overlap(preds: dict[str, np.ndarray]):
     ax.spines["top"].set_visible(False)
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
-    return fig
+    return fig, {
+        "f1": f1_score,
+        "acc": accuracy,
+        "roc": roc_auc,
+        "threshold": threshold,
+    }
 
 
-def plot_pca(preds: dict[str, np.ndarray]):
+def plot_pca_3d(preds: dict[str, np.ndarray]):
     pca = PCA(n_components=3)
     # concatenate all the predictions
     all_preds = np.concatenate([pred for pred in preds.values()], axis=0)
     fig = plt.figure(figsize=(8, 6), layout="constrained")
     ax = plt.axes(projection="3d")
     pca.fit(all_preds)
-    for key, pred in preds.items():
+    for i, (key, pred) in enumerate(preds.items()):
+        key = key.split(".")[0].split("_")[-1].upper()
         pred_pca = pca.transform(pred)
         ax.scatter3D(
-            pred_pca[:, 0], pred_pca[:, 1], pred_pca[:, 2], label=key, alpha=0.3
+            pred_pca[:, 0],
+            pred_pca[:, 1],
+            pred_pca[:, 2],
+            label=key,
+            alpha=0.3,
+            c=DEFAULT_COLOURS[i],
         )
 
     ax.set_xlabel("PCA Component 1", fontsize=13)
     ax.set_ylabel("PCA Component 2", fontsize=13)
     ax.set_zlabel("PCA Component 3", fontsize=13)
+    ax.legend(loc="upper right", bbox_to_anchor=(0.9, 0.8))
+    print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+    return fig
+
+
+def plot_pca_2d(preds: dict[str, np.ndarray]):
+    pca = PCA(n_components=2)  # Change to 2 components
+    # concatenate all the predictions
+    all_preds = np.concatenate([pred for pred in preds.values()], axis=0)
+    fig, ax = plt.subplots(figsize=(8, 6), layout="constrained")
+    pca.fit(all_preds)
+    for i, (key, pred) in enumerate(preds.items()):
+        key = key.split(".")[0].split("_")[-1].upper()
+        pred_pca = pca.transform(pred)
+        ax.scatter(
+            pred_pca[:, 0], pred_pca[:, 1], label=key, alpha=0.3, c=DEFAULT_COLOURS[i]
+        )
+
+    ax.set_xlabel("PCA Component 1", fontsize=13)
+    ax.set_ylabel("PCA Component 2", fontsize=13)
     ax.legend()
     print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
     return fig

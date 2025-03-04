@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 
-from src.path_lib import CHECKPOINT_PATH, TEST_PATH
+from src.path_lib import CHECKPOINT_PATH
 
 
 class Tokenizer:
@@ -94,7 +94,10 @@ class Tokenizer:
             raise ValueError("Vocabulary not found. Please build vocabulary first.")
         # encode tokens
         len_vocab = len(self.vocab)
-        return [self.vocab[token] if token in self.vocab else len_vocab for token in token_list]
+        return [
+            self.vocab[token] if token in self.vocab else len_vocab
+            for token in token_list
+        ]
 
     def _batch_encode(self, tokens: list[str]) -> list[list[int]]:
         with Pool(processes=6) as pool:
@@ -116,37 +119,39 @@ class MolFeatureExtractor:
         if isinstance(smi, list):
             return self._batch_encode(smi)
         elif isinstance(smi, str):
-            feat = MolFeatureExtractor._calculate_2D_feat(smi) # type: ignore
+            feat = MolFeatureExtractor._calculate_2D_feat(smi)  # type: ignore
             return np.expand_dims(feat, axis=0)
-    
-    @staticmethod # type: ignore
+
+    @staticmethod  # type: ignore
     @ray.remote
     def _encode(smis: str) -> tuple:
-        return [MolFeatureExtractor._calculate_2D_feat(smi) for smi in smis] # type: ignore
-    
+        return [MolFeatureExtractor._calculate_2D_feat(smi) for smi in smis]  # type: ignore
+
     def _batches(self, it, chunk_size: int):
         it = iter(it)
         return iter(lambda: list(islice(it, chunk_size)), [])
 
-
     def _batch_encode(self, smiles: list[str]) -> np.ndarray:
         ray.init(num_gpus=0, log_to_driver=False)
-        batch_size = 4 * 1024 * int(ray.cluster_resources()['CPU'])
+        batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
         size = len(smiles)
-        n_batches = size//batch_size + 1
-        chunksize = int(ray.cluster_resources()['CPU'] * 16)
-        features = np.zeros((size, 10), dtype=np.uint8)
+        n_batches = size // batch_size + 1
+        chunksize = int(ray.cluster_resources()["CPU"] * 16)
+        features = np.zeros((size, 10), dtype=np.float32)
         i = 0
         for smis_batch in tqdm(self._batches(smiles, batch_size), total=n_batches):
             refs = [
-                MolFeatureExtractor._encode.remote(mols_chunk) # type: ignore
+                MolFeatureExtractor._encode.remote(mols_chunk)  # type: ignore
                 for mols_chunk in self._batches(smis_batch, chunksize)
             ]
-            two_d_chunks = [ray.get(r) for r in tqdm(
-                refs, desc='Calculating 2D descriptors', unit='chunk', leave=False
-            )]
+            two_d_chunks = [
+                ray.get(r)
+                for r in tqdm(
+                    refs, desc="Calculating 2D descriptors", unit="chunk", leave=False
+                )
+            ]
             two_d_chunks = np.vstack(two_d_chunks)
-            features[i:i+len(smis_batch)] = two_d_chunks
+            features[i : i + len(smis_batch)] = two_d_chunks
             i += len(smis_batch)
         ray.shutdown()
         return features
@@ -162,19 +167,23 @@ class MolFeatureExtractor:
         heterocyc = rdMolDescriptors.CalcNumHeterocycles(mol)
         no_spiro = rdMolDescriptors.CalcNumSpiroAtoms(mol)
         no_bridgehead = rdMolDescriptors.CalcNumBridgeheadAtoms(mol)
-        n_macro, n_multi = MolFeatureExtractor.numMacroAndMulticycle(mol, mol.GetNumAtoms())
-        return np.array([
-            sp3,
-            sps,
-            stereo,
-            rot_bonds,
-            tpsa,
-            heterocyc,
-            no_spiro,
-            no_bridgehead,
-            n_macro,
-            n_multi,
-        ])
+        n_macro, n_multi = MolFeatureExtractor.numMacroAndMulticycle(
+            mol, mol.GetNumAtoms()
+        )
+        return np.array(
+            [
+                sp3,
+                sps,
+                stereo,
+                rot_bonds,
+                tpsa,
+                heterocyc,
+                no_spiro,
+                no_bridgehead,
+                n_macro,
+                n_multi,
+            ]
+        )
 
     @staticmethod
     def numMacroAndMulticycle(mol, nAtoms):
@@ -189,9 +198,7 @@ class MolFeatureExtractor:
         nMultiRingAtoms = sum([v - 1 for k, v in multi_ring_atoms.items() if v > 1])
         return nMacrocycles, nMultiRingAtoms
 
-    def standardise_features(
-        self, features: np.ndarray
-    ) -> np.ndarray:
+    def standardise_features(self, features: np.ndarray) -> np.ndarray:
         if os.path.exists(self.scaler_path / f"std.bin"):
             try:
                 scalar = joblib.load(self.scaler_path / f"std.bin")
@@ -205,12 +212,12 @@ class MolFeatureExtractor:
         return fitted_data
 
 
-def calculate_training_steps(path_data, model_name:str) -> None:
+def calculate_training_steps(path_data, model_name: str) -> None:
     if model_name == "Transformer":
         batch_size = gin_qp("TFLoader.batch_size")
     elif model_name == "RoBERTa":
         batch_size = gin_qp("RoBERTaLoader.batch_size")
-    
+
     acc_batches, epochs = (
         gin_qp("main.gradient_accum"),
         gin_qp("main.max_epoch"),
@@ -226,7 +233,7 @@ def calculate_training_steps(path_data, model_name:str) -> None:
     if model_name == "Transformer":
         gin.bind_parameter(
             "Transformer/torch.optim.lr_scheduler.OneCycleLR.total_steps", train_steps
-    )
+        )
     elif model_name == "RoBERTa":
         gin.bind_parameter(
             "RoBERTa.configure_optimizers.num_training_steps", train_steps
@@ -236,8 +243,10 @@ def calculate_training_steps(path_data, model_name:str) -> None:
         )
 
 
-def load_checkpointed_gin_config(checkpoint_path: Path, caller:str, combined: bool) -> None:
-    if combined: 
+def load_checkpointed_gin_config(
+    checkpoint_path: Path, caller: str, combined: bool
+) -> None:
+    if combined:
         gin.constant("loss_sep", True)
     else:
         gin.constant("loss_sep", False)
@@ -255,6 +264,7 @@ def load_checkpointed_gin_config(checkpoint_path: Path, caller:str, combined: bo
     gin.parse_config_file(config_name)
     print(f"Loaded gin config file from {CONFIG_PATH}/config_temp.txt")
     os.remove(config_name)
+
 
 def load_model_from_checkpoint(model, checkpoint_path: Path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

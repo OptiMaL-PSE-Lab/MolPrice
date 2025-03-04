@@ -7,7 +7,7 @@ import lightning.pytorch as L
 from lightning.pytorch import LightningModule, LightningDataModule
 from lightning.pytorch.accelerators import find_usable_cuda_devices  # type: ignore
 
-from src.plotter import plot_parity, plot_dist_overlap, plot_pca
+from src.plotter import plot_parity, plot_dist_overlap, plot_pca_2d, plot_pca_3d
 from src.data_loader import TestLoader
 from src.path_lib import *
 from src.model_utils import load_checkpointed_gin_config, load_model_from_checkpoint
@@ -18,13 +18,13 @@ def main_data_test(
     model: LightningModule,
     loader: TestLoader,
 ):
-
+    predict_batches = 0.01
     loaded_model = load_model_from_checkpoint(model, CHECKPOINT_PATH / args.cn)
     trainer = L.Trainer(
         accelerator="auto",
         devices=find_usable_cuda_devices(),
         logger=False,
-        limit_predict_batches=0.1,
+        limit_predict_batches=predict_batches,
     )
 
     out = trainer.test(loaded_model, loader.test_dataloader())
@@ -36,9 +36,9 @@ def main_data_test(
     trainer.predict(loaded_model, my_loader, return_predictions=False)
     end_time = timeit.default_timer()
 
-    avg_time = (end_time - time_start) / len(my_loader.dataset)  # type: ignore
+    avg_time = (end_time - time_start) / len(my_loader.dataset*predict_batches)  # type: ignore
     # write out to CONFIG_PATH with new line between each metric
-    with open(CONFIG_PATH / "test_results.txt", "w") as f:
+    with open(CONFIG_PATH / "results" / "test_results.txt", "w") as f:
         for metric in out:
             f.write(f"{metric}\n")  #
         f.write(f"Average inference time: {avg_time}\n")
@@ -50,7 +50,7 @@ def main_data_test(
         labels_np = np.concatenate([label.cpu().numpy() for label in labels], axis=0)  # type: ignore
         logits_np = np.concatenate([logit.cpu().numpy() for logit in logits], axis=0)  # type: ignore
         fig = plot_parity(logits_np, labels_np, r2_score)
-        fig.savefig(CONFIG_PATH / "parity.png", dpi=300)
+        fig.savefig(CONFIG_PATH / "results" / "parity.png", dpi=300)
 
 
 def main_ood_test(
@@ -78,8 +78,17 @@ def main_ood_test(
         outputs[f"{t_name}"] = torch.cat(out).numpy()  # type: ignore
 
     if args.plot:
-        fig = plot_dist_overlap(outputs)
-        fig.savefig(CONFIG_PATH / "dist_overlap.png", dpi=300)
+        fig, ood_stats = plot_dist_overlap(outputs)
+        # get number of test set
+        ts_number = t_name.split("_")[0]
+        fig.savefig(CONFIG_PATH / "results" / f"{ts_number}_overlap.png", dpi=300)
+
+        # write to file the ood_stats
+        with open(CONFIG_PATH / "results" / f"ExTS_stats.txt", "a") as f:
+            f.write(f"Test set: {ts_number}\n")
+            for key, value in ood_stats.items():
+                f.write(f"{key}: {value}\n")
+            f.write("\n")
 
 
 def main_pca(
@@ -103,8 +112,10 @@ def main_pca(
         out = unpack_outputs(out, True)
         outputs[f"{t_name}"] = torch.cat(out).numpy()  # type:ignore
 
-    fig = plot_pca(outputs)
-    fig.savefig(CONFIG_PATH / "pca.png", dpi=300)
+    fig_2d = plot_pca_2d(outputs)
+    fig_3d = plot_pca_3d(outputs)
+    fig_2d.savefig(CONFIG_PATH / "results" / "pca_2d.png", dpi=300)
+    fig_3d.savefig(CONFIG_PATH / "results" / "pca_3d.png", dpi=300)
 
 
 def add_shared_arguments(parser):
@@ -236,5 +247,7 @@ if __name__ == "__main__":
 
     # read config file as txt, delete first line, save as temporary file, parse file, delete temporary file
     load_checkpointed_gin_config(CONFIG_PATH, caller="test", combined=args.combined)
-
+    # create res folder in CONFIG_PATH if it doesn't exist
+    res_path = CONFIG_PATH / "results"
+    res_path.mkdir(exist_ok=True)
     args.func(args, model, test_loader)
