@@ -30,11 +30,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Inference script")
     parser.add_argument(
-        "--mol", help="Path to the molecule file (.csv) or singular SMILES string", required=True
+        "--mol",
+        help="Path to the molecule file (.csv) or singular SMILES string",
+        required=True,
     )
-    parser.add_argument(
-        "--cn", help="Model Checkpoint", required=True
-    )
+    parser.add_argument("--cn", help="Model Checkpoint", required=True)
     args = parser.parse_args()
     args.cn = f"{args.cn}/best.ckpt"
 

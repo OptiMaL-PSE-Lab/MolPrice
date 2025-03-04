@@ -74,7 +74,7 @@ class Preprocessing:
             return None
 
         return m_weight
-    
+
     @staticmethod
     def reduce_size(
         lower_bound: float, df: pd.DataFrame, name: str, data_path: Path
@@ -82,9 +82,10 @@ class Preprocessing:
         """Reduce size of dataframe to a specified price"""
         df_new = df[df["price_mmol"] > lower_bound]
         df_new = df_new.drop(df.columns[0], axis=1)
-        df_new.to_csv(data_path / f"{name}_reduced.txt", index=True
+        df_new.to_csv(data_path / f"{name}_reduced.txt", index=True)
+        print(
+            f"Reduced size of {name} dataset from {df.shape[0]} to {df_new.shape[0]} molecules"
         )
-        print(f"Reduced size of {name} dataset from {df.shape[0]} to {df_new.shape[0]} molecules")
 
     @staticmethod
     def plot_price_distribution(price_df: pd.DataFrame, dataset_name: str) -> None:
@@ -307,7 +308,7 @@ class MolportExtractor(Preprocessing):
         print("Obtaining indices for molecules with multiple prices")
         for i in tqdm(range(len(count_df))):
             current_index = count_df.iloc[i, 0] + counting_index  # type:ignore
-            index_list.append((counting_index + 1, current_index)) # type:ignore
+            index_list.append((counting_index + 1, current_index))  # type:ignore
             counting_index = current_index
 
         return index_list
@@ -387,7 +388,7 @@ if __name__ == "__main__":
         default=DEFAULT_DATASETS,
     )
     arg_parser.add_argument(
-        "--price_threshold","--pt", type=float, default=DEFAULT_PRICE_THRESHOLD
+        "--price_threshold", "--pt", type=float, default=DEFAULT_PRICE_THRESHOLD
     )
     arg_parser.add_argument(
         "--chunk_size",
@@ -402,6 +403,7 @@ if __name__ == "__main__":
 
     if args.task == "extract":
         print("Extracting data from database(s)...")
+
         def check_extractor(dataset: str) -> None:
             if dataset[:4] not in avaiable_extractors:
                 raise ValueError(f"Dataset Extractor {args.dataset} not available")
@@ -414,9 +416,7 @@ if __name__ == "__main__":
         else:
             db = args.dataset[0]
             check_extractor(db)
-            extractor = avaiable_extractors[db[:4]](
-                data_path, db, args.chunk_size
-            )
+            extractor = avaiable_extractors[db[:4]](data_path, db, args.chunk_size)
             extractor.extract_data()
 
     elif args.task == "plot":
@@ -434,14 +434,18 @@ if __name__ == "__main__":
             db = args.dataset[0]
             df = pd.read_csv(data_path / db)
             Preprocessing.plot_price_distribution(df, db.split("_")[0])
-    
+
     elif args.task == "reduce":
         print("Reducing size of dataset(s)...")
         if len(args.dataset) > 1:
             for db in args.dataset:
                 df = pd.read_csv(data_path / db)
-                Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)
+                Preprocessing.reduce_size(
+                    args.price_threshold, df, db.split("_")[0], data_path
+                )
         else:
             db = args.dataset[0]
             df = pd.read_csv(data_path / db)
-            Preprocessing.reduce_size(args.price_threshold, df, db.split("_")[0], data_path)
+            Preprocessing.reduce_size(
+                args.price_threshold, df, db.split("_")[0], data_path
+            )

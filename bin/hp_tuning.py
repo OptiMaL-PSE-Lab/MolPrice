@@ -12,9 +12,7 @@ from lightning.pytorch.loggers import WandbLogger
 from optuna.integration import PyTorchLightningPruningCallback  # type: ignore
 
 from src.model import Fingerprints
-from src.data_loader import FPLoader, CombinedLoader
-from src.model_utils import load_model_from_checkpoint, load_checkpointed_gin_config
-from src.path_lib import CHECKPOINT_PATH, TEST_PATH
+from src.data_loader import FPLoader
 
 
 def objective_single_price(trial: optuna.trial.Trial) -> float:
@@ -63,8 +61,8 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
         feature_path=feature_path,
         batch_size=batch_size,
         count_simulation=count_simulation,
-        fp_type=fp_type, 
-        two_d = two_d,
+        fp_type=fp_type,
+        two_d=two_d,
         workers_loader=gin.REQUIRED,
         data_split=gin.REQUIRED,
         df_name=gin.REQUIRED,
@@ -81,8 +79,8 @@ def objective_single_price(trial: optuna.trial.Trial) -> float:
         hidden_size_3=hidden_dim_3,
         dropout=dropout,
         two_d=two_d,
-        loss_sep=False, 
-        loss_hp=0, 
+        loss_sep=False,
+        loss_hp=0,
     )
     gin.parse_config_file(GIN_PATH_TUNING)
     gin.bind_parameter("torch.optim.Adam.lr", lr)
@@ -120,13 +118,12 @@ if __name__ == "__main__":
     gin.parse_config_file(GIN_PATH_DATALOADER)
 
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=5)
-    
-    STUDY_NAME = "hp_tuning_2"
+
+    STUDY_NAME = "hp_tuning"
     study = optuna.create_study(
         direction="minimize", pruner=pruner, study_name=STUDY_NAME
     )
     study.optimize(objective_single_price, n_trials=35)
-
 
     print("Number of finished trials: ", len(study.trials))
 
@@ -138,7 +135,7 @@ if __name__ == "__main__":
 
     # plot optimization history with wandb
     wandb.init(project=STUDY_NAME)
-    
+
     wandb.log(
         {
             "optuna_optimization_history": optuna.visualization.plot_optimization_history(
