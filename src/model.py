@@ -228,8 +228,8 @@ class Fingerprints(CustomModule):
         hidden_size_2: int,
         hidden_size_3: int,
         dropout: float,
-        loss_hp: float,
         loss_sep: bool,
+        loss_hp: float,  # hp for balancing contrastive loss
         two_d: bool,  # whether dataloader included 2D info in fingerprint
     ):
 
@@ -273,7 +273,9 @@ class Fingerprints(CustomModule):
         es_out, hs_out = out.chunk(2, dim=0)
         mse_loss = self.mse_loss(es_out, es_label)
         cont_loss = self.hellinger_distance(z_hs, z_es)
-        total_loss = mse_loss + 0.05 * cont_loss
+        total_loss = (
+            mse_loss + self.loss_hp * cont_loss
+        )  # + torch.sum(torch.max(hs_out-20, torch.tensor(0))) #TODO Automate constraint activation
         return total_loss, mse_loss, cont_loss
 
     def cosine_similarity_loss(self, h_HS, h_ES):

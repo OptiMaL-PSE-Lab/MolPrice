@@ -742,8 +742,8 @@ class TestLoader(LightningDataModule):
         self.batch_size = batch_size
         self.model_name = model_name
         self.has_price = has_price
-        self.indices: Optional[list[int]] = None
         self.fp_size: int
+        self.indices = None
         self.num_workers = os.cpu_count()
 
     def prepare_data(self):
@@ -890,7 +890,6 @@ class TestLoader(LightningDataModule):
             batch_size=self.batch_size,
             num_workers=10,
             persistent_workers=True,
-            # collate_fn=self.collate_fn,
         )
 
     def get_smiles(self) -> list[str]:
@@ -934,27 +933,6 @@ class TestLoader(LightningDataModule):
 
         ray.shutdown()
         return fps
-
-    def collate_fn(self, batch):
-        # batch is sparse csr matrix -> convert to dense tensor
-        data_batch = batch[0]["X"]
-        if type(data_batch) == csr_matrix:
-            data_batch = data_batch.tocoo()
-            values = data_batch.data
-            indices = np.array((data_batch.row, data_batch.col))
-            shape = data_batch.shape
-            i, v, s = (
-                torch.LongTensor(indices),
-                torch.FloatTensor(values),
-                torch.Size(shape),  # type: ignore
-            )
-            X = torch.sparse.FloatTensor(i, v, s)  # type: ignore
-            X = X.to_dense()
-        else:
-            raise ValueError("Data type not supported")
-
-        return {"X": X, "y": batch[0]["y"]}  # type: ignore
-
 
 class CombinedLoader(LightningDataModule):
     """

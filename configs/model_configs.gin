@@ -14,7 +14,7 @@ bin.train.main.gradient_accum = 1
 
 # Constants 
 lr = 1.5e-4
-weight_decay=1e-4
+weight_decay=1e-6
 
 lr_tf = 1e-4
 decay_tf = 1e-3
@@ -39,7 +39,7 @@ FP.hidden_size_1 = 512
 FP.hidden_size_2 = 256
 FP.hidden_size_3 = 128
 FP.dropout = 0.2
-FP.loss_hp = 0.7
+FP.loss_hp = 0.05
 FP.loss_sep = %loss_sep
 FP.two_d = %two_d
 FP.configure_optimizers.optimizer = @fp/torch.optim.Adam
