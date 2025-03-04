@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 from rdkit import Chem
-from rdkit.Chem import rdFingerprintGenerator 
+from rdkit.Chem import rdFingerprintGenerator
 from lightning.pytorch import LightningDataModule
 from torch import LongTensor, FloatTensor
 from torch.utils.data.sampler import BatchSampler, RandomSampler
@@ -768,7 +768,7 @@ class TestLoader(LightningDataModule):
             self.fp_size = gin.query_parameter("%fp_size")
             two_d = gin.query_parameter("%two_d")
             print(f"Creating feature vectors for {fp_type} fp_type")
-            
+
             fps = self._smis_to_fps(smiles, fp_type, p_r_size, self.fp_size, count_sim)
             if two_d:
                 feature_extractor = MolFeatureExtractor(DATA_PATH / "features")
@@ -907,7 +907,7 @@ class TestLoader(LightningDataModule):
         self, smis, fp_type: str, radius: int, length: int, count_sim: bool
     ):
         if isinstance(smis, str):
-            return mols_to_fps(smis, length, radius, fp_type, count_sim) # type: ignore
+            return mols_to_fps(smis, length, radius, fp_type, count_sim)  # type: ignore
         else:
             ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
             batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
@@ -933,6 +933,7 @@ class TestLoader(LightningDataModule):
 
         ray.shutdown()
         return fps
+
 
 class CombinedLoader(LightningDataModule):
     """
@@ -1003,10 +1004,16 @@ def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
             maxDistance=p_r_size, fpSize=fp_size, countSimulation=count_sim
         )
     elif fp_type == "mhfp":
-        smis = [Chem.MolToSmiles(Chem.MolFromSmiles(smi, sanitize=False), kekuleSmiles=False) for smi in smis]
+        smis = [
+            Chem.MolToSmiles(
+                Chem.MolFromSmiles(smi, sanitize=False), kekuleSmiles=False
+            )
+            for smi in smis
+        ]
         return [MHFPEncoder.secfp_from_smiles(smi, length=fp_size) for smi in smis]
     mols = [Chem.MolFromSmiles(smi) for smi in smis]
     return [fp_gen.GetFingerprintAsNumPy(mol) for mol in mols]
+
 
 def mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
     "Speed up of fp_type generation with ray"
@@ -1025,7 +1032,9 @@ def mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
             maxDistance=p_r_size, fpSize=fp_size, countSimulation=count_sim
         )
     elif fp_type == "mhfp":
-        smis = Chem.MolToSmiles(Chem.MolFromSmiles(smis, sanitize=False), kekuleSmiles=False)
+        smis = Chem.MolToSmiles(
+            Chem.MolFromSmiles(smis, sanitize=False), kekuleSmiles=False
+        )
         return np.expand_dims(
             MHFPEncoder.secfp_from_smiles(smis, length=fp_size), axis=0
         )

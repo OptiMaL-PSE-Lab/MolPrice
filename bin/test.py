@@ -36,7 +36,7 @@ def main_data_test(
     trainer.predict(loaded_model, my_loader, return_predictions=False)
     end_time = timeit.default_timer()
 
-    avg_time = (end_time - time_start) / len(my_loader.dataset*predict_batches)  # type: ignore
+    avg_time = (end_time - time_start) / len(my_loader.dataset * predict_batches)  # type: ignore
     # write out to CONFIG_PATH with new line between each metric
     with open(CONFIG_PATH / "results" / "test_results.txt", "w") as f:
         for metric in out:

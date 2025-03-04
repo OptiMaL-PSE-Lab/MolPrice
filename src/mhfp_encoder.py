@@ -128,10 +128,12 @@ class MHFPEncoder:
             t_h = struct.unpack("<I", sha1(t).digest()[:4])[0]
             hashes = np.remainder(
                 np.remainder(
-                    self.permutations_a * t_h + self.permutations_b, MHFPEncoder.prime, dtype=np.uint64
+                    self.permutations_a * t_h + self.permutations_b,
+                    MHFPEncoder.prime,
+                    dtype=np.uint64,
                 ),
                 self.max_hash,
-                dtype=np.uint64
+                dtype=np.uint64,
             )
             hash_values = np.minimum(hash_values, hashes)
 
@@ -298,7 +300,9 @@ class MHFPEncoder:
             warnings.warn(
                 "The length of the shingling is 0, which results in an empty set and an all zero folded fingerprint."
             )
-            warnings.warn(f"Molecule that could not be converted is: {AllChem.MolToSmiles(in_mol)}")
+            warnings.warn(
+                f"Molecule that could not be converted is: {AllChem.MolToSmiles(in_mol)}"
+            )
 
         return shingling
 
