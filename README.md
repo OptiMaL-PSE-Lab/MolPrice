@@ -61,7 +61,8 @@ python -m bin.train --model MODEL_TYPE --fp FINGERPRINT_TYPE
 ```
 
 Within the script, the following arguments can be adjusted: 
-    - **model**: Choose between [Fingerprint, RoBERTa, Transformer, LSTM_EFG]
+<br>
+    - **model**: Choose between [Fingerprint, RoBERTa, Transformer, LSTM_EFG] <br>
     - **fp**: Choose between [atom, rdkit, morgan, mhfp] (mhfp is the SECFP fingerprint encoder)
     
 In one has a pre-trained Fingerprint model, one can train the model on the contrastive loss by calling: 
