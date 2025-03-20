@@ -735,6 +735,7 @@ class TestLoader(LightningDataModule):
         batch_size: int,
         model_name: str,
         has_price: bool,
+        smiles_col: str = "smi_can",
     ):
         super().__init__()
         self.test_mol = test_mol
@@ -742,6 +743,7 @@ class TestLoader(LightningDataModule):
         self.batch_size = batch_size
         self.model_name = model_name
         self.has_price = has_price
+        self.col_name = smiles_col
         self.fp_size: int
         self.indices = None
         self.num_workers = os.cpu_count()
@@ -894,7 +896,7 @@ class TestLoader(LightningDataModule):
 
     def get_smiles(self) -> list[str]:
         df = pd.read_csv(self.test_mol)
-        return df["smi_can"].to_list()
+        return df[self.col_name].to_list()
 
     def _tokenize(self, examples):
         return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
