@@ -735,6 +735,7 @@ class TestLoader(LightningDataModule):
         batch_size: int,
         model_name: str,
         has_price: bool,
+        smiles_col: str = "smi_can",
     ):
         super().__init__()
         self.test_mol = test_mol
@@ -742,6 +743,7 @@ class TestLoader(LightningDataModule):
         self.batch_size = batch_size
         self.model_name = model_name
         self.has_price = has_price
+        self.col_name = smiles_col
         self.fp_size: int
         self.indices = None
         self.num_workers = os.cpu_count()
@@ -894,7 +896,7 @@ class TestLoader(LightningDataModule):
 
     def get_smiles(self) -> list[str]:
         df = pd.read_csv(self.test_mol)
-        return df["smi_can"].to_list()
+        return df[self.col_name].to_list()
 
     def _tokenize(self, examples):
         return self.tokenizer(examples["smi"], padding="do_not_pad", truncation=True)
@@ -910,6 +912,7 @@ class TestLoader(LightningDataModule):
             return mols_to_fps(smis, length, radius, fp_type, count_sim)  # type: ignore
         else:
             ray.init(num_cpus=os.cpu_count(), num_gpus=0, log_to_driver=False)
+            sanitize = False if "TS" in self.test_mol else True
             batch_size = 4 * 1024 * int(ray.cluster_resources()["CPU"])
             size = len(smis)
             n_batches = size // batch_size + 1
@@ -918,7 +921,7 @@ class TestLoader(LightningDataModule):
             i = 0
             for smis_batch in tqdm(self._batches(smis, batch_size), total=n_batches):
                 refs = [
-                    _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim)  # type: ignore
+                    _mols_to_fps.remote(mols_chunk, length, radius, fp_type, count_sim, sanitize)  # type: ignore
                     for mols_chunk in self._batches(smis_batch, chunksize)
                 ]
                 fps_chunks = [
@@ -989,7 +992,7 @@ class CombinedLoader(LightningDataModule):
 
 
 @ray.remote
-def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
+def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim, sanitize=True):
     "Speed up of fp_type generation with ray"
     if fp_type == "morgan":
         fp_gen = rdFingerprintGenerator.GetMorganGenerator(
@@ -1006,7 +1009,7 @@ def _mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
     elif fp_type == "mhfp":
         smis = [
             Chem.MolToSmiles(
-                Chem.MolFromSmiles(smi, sanitize=False), kekuleSmiles=False
+                Chem.MolFromSmiles(smi, sanitize=sanitize), kekuleSmiles=False
             )
             for smi in smis
         ]
@@ -1033,7 +1036,7 @@ def mols_to_fps(smis, fp_size, p_r_size, fp_type, count_sim):
         )
     elif fp_type == "mhfp":
         smis = Chem.MolToSmiles(
-            Chem.MolFromSmiles(smis, sanitize=False), kekuleSmiles=False
+            Chem.MolFromSmiles(smis, sanitize=True), kekuleSmiles=False
         )
         return np.expand_dims(
             MHFPEncoder.secfp_from_smiles(smis, length=fp_size), axis=0

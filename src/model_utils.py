@@ -262,8 +262,11 @@ def load_checkpointed_gin_config(
         f.writelines(lines[1:])
     config_name = str(CONFIG_PATH / "config_temp.txt")
     gin.parse_config_file(config_name)
-    print(f"Loaded gin config file from {CONFIG_PATH}/config_temp.txt")
     os.remove(config_name)
+    if caller == "predict":
+        pass
+    else:
+        print(f"Loaded gin config file from {CONFIG_PATH}/config_temp.txt")
 
 
 def load_model_from_checkpoint(model, checkpoint_path: Path):
