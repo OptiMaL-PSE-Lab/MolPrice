@@ -23,7 +23,7 @@ conda env create -f molprice.yml
 conda activate molprice
 
 ```
-We provide model checkpoints for MolPrice via Figshare **xyz**. One can choose from the following models: 
+We provide model checkpoints for MolPrice via [Figshare](https://figshare.com/articles/journal_contribution/MolPrice_-_Model_Checkpoints/28628009) . One can choose from the following models: 
 <br>
 1. SECFP fingerprint (with or w/o 2D features)
 2. Morgan Fingerprint (with or w/o 2D features)
@@ -42,13 +42,13 @@ python -m bin.predict --mol molecules.csv --cn MP_SECFP_hybrid --smiles-col SMIL
 ```
 
 ## Reproducing SA Test Results
-The test datasets for SA comparison can be obtained from Figshare via **xyz**. Once the files are downloaded, place within **./testing** directory.
+The test datasets for SA comparison can be obtained from Figshare via [test files](https://figshare.com/articles/journal_contribution/MolPrice_-_Test_Files/28632449). Once the files are downloaded, place within **./testing** directory.
 <br>
 The results for each test dataset can be obtained by running: 
 ```bash
 python -m bin.test main_ood --model Fingerprint --cn MODEL_CHECKPOINT --test_name TEST_FILE1,TEST_FILE2 --combined
 ```
-For example, if one downloaded the MP_SECFP_hybrid model and saved the test files 3 as follows: TS3_hs.csv and TS3_es.csv, once can run: 
+For example, if one downloaded the MP_SECFP_hybrid model and saved the test files 3 as follows: TS3_hs.csv and TS3_es.csv, one can run: 
 ```bash
 python -m bin.test main_ood --model Fingerprint --cn MP_SECFP_hybrid/best.ckpt --test_name TS3_hs.csv,TS3_es.csv --combined
 ```
