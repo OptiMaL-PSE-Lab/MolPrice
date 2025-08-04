@@ -27,9 +27,9 @@ conda activate molprice
 There is two ways to use MolPrice model described below:
 
 ### Standalone Numpy Model
-We now provide MolPrice as a **lightweight**, standalone numpy implementation for the Morgan fingerprint. 
+We now provide MolPrice as a **lightweight**, standalone numpy implementation for the Morgan fingerprint. The pickled model is provided as part of the repo.
 > [!NOTE]
-> This implementation does not need a GPU, and calculates the price given a molecule in less than **0.1 ms** using batching!
+> This implementation does not need a GPU, and calculates the price in less than **0.1 ms** given a molecule!
 
 ### PyTorch Models
 We provide model checkpoints for MolPrice via [Figshare](https://figshare.com/articles/journal_contribution/MolPrice_-_Model_Checkpoints/28628009) . One can choose from the following models: 
