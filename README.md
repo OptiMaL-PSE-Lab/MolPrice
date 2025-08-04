@@ -23,21 +23,39 @@ conda env create -f molprice.yml
 conda activate molprice
 
 ```
+## Model Usage
+There is two ways to use MolPrice model described below:
+
+### Standalone Numpy Model
+We now provide MolPrice as a **lightweight**, standalone numpy implementation for the Morgan fingerprint. 
+> [!NOTE]
+> This implementation does not need a GPU, and calculates the price given a molecule in less than **0.1 ms** using batching!
+
+### PyTorch Models
 We provide model checkpoints for MolPrice via [Figshare](https://figshare.com/articles/journal_contribution/MolPrice_-_Model_Checkpoints/28628009) . One can choose from the following models: 
 <br>
 1. SECFP fingerprint (with or w/o 2D features)
 2. Morgan Fingerprint (with or w/o 2D features)
 
-Once the model is downloaded, place in **./models** directory.
+Once the model is downloaded, place in **./models** directory. \n
+These models take about 1.3 ms per molecule.
 
-## Making Price Predictions
+## Predicting Molecular Prices
 One can run the code per molecule or using batch prediction. In case of batch prediction, please first save all molecules in a .csv file.
 
 ```bash
 # Single molecule prediction
+# Using NumPy model:
+python -m bin.numpy_predict --mol "CC(=O)OC1=CC=CC=C1C(=O)O"
+
+# Using PyTorch model
 python -m bin.predict --mol "CC(=O)OC1=CC=CC=C1C(=O)O" --cn MP_SECFP_hybrid
 
 # Batch prediction
+# Using NumPy model
+python -m bin.numpy_predict --mol molecules.csv --smiles-col SMILES_COLUMN
+
+# Using PyTorch model
 python -m bin.predict --mol molecules.csv --cn MP_SECFP_hybrid --smiles-col SMILES_COLUMN
 ```
 
