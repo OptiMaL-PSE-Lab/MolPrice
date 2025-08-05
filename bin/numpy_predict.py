@@ -8,10 +8,11 @@ from pathlib import Path
 from src.model_utils import MolFeatureExtractor
 from tqdm import tqdm
 
-RDLogger.DisableLog("rdApp.*") # type: ignore
+RDLogger.DisableLog("rdApp.*")  # type: ignore
 # Optional Ray import
 try:
     import ray
+
     RAY_AVAILABLE = True
     # remove ray logging
 
@@ -20,9 +21,11 @@ except ImportError:
 
 # Ray remote function for parallel fingerprint generation (must be at module level)
 if RAY_AVAILABLE:
+
     @ray.remote
     def process_smiles_batch(smiles_batch, fp_rad, fp_len, data_path):
         """Process a batch of SMILES in parallel"""
+        # Import numpy with threading already configured
         import numpy as np
         from rdkit import Chem
         from rdkit.Chem import rdFingerprintGenerator
@@ -36,7 +39,7 @@ if RAY_AVAILABLE:
         feature_gen = MolFeatureExtractor(Path(data_path))
 
         results = []
-        for smi in tqdm(smiles_batch, desc="Processing SMILES batch", leave=False):
+        for smi in smiles_batch:  # Remove tqdm to avoid overhead
             try:
                 if not smi:
                     fp = np.zeros(fp_len, dtype=np.float32)
@@ -193,7 +196,7 @@ class NumpyFingerprints:
         intermediate = z.copy()
 
         # Final linear layer
-        output = z @ self.final_weight + self.final_bias  
+        output = z @ self.final_weight + self.final_bias
 
         forward_time = time.time() - start_time
         if self.debug:
@@ -255,7 +258,12 @@ class NumpyFingerprints:
                 ray.init(ignore_reinit_error=True, log_to_driver=False)
             fps = self._parallel_fingerprint_generation(smiles_list)
         else:
-            fps = np.array([self.smi_to_fp(smi) for smi in tqdm(smiles_list, desc="Processing SMILES")])
+            fps = np.array(
+                [
+                    self.smi_to_fp(smi)
+                    for smi in tqdm(smiles_list, desc="Processing SMILES")
+                ]
+            )
 
         print("-" * 50)
         print("MODEL PREDICTION")
@@ -281,7 +289,9 @@ class NumpyFingerprints:
             for i in range(0, len(smiles_list), batch_size)
         ]
 
-        print(f"Processing {len(smiles_list)} SMILES in {len(batches)} parallel batches...")
+        print(
+            f"Processing {len(smiles_list)} SMILES in {len(batches)} parallel batches..."
+        )
 
         # Submit parallel tasks
         data_path = str(Path(__file__).parent.parent / "data/features")
@@ -332,7 +342,7 @@ if __name__ == "__main__":
         print("-" * 50)
         print(f"Loading SMILES from {args.mol}")
         df = pd.read_csv(args.mol)
-        smiles = df[args.smiles_col].tolist()
+        smiles = df[args.smiles_col].tolist()[:1000]
         print(f"Loaded {len(smiles)} SMILES from CSV")
 
         prediction = model.predict_batch_from_smiles(smiles)
