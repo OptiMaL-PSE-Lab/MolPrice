@@ -361,7 +361,7 @@ if __name__ == "__main__":
         print("-" * 50)
         print(f"Loading SMILES from {args.mol}")
         df = pd.read_csv(args.mol)
-        smiles = df[args.smiles_col].tolist()[:1000]
+        smiles = df[args.smiles_col].tolist()
         print(f"Loaded {len(smiles)} SMILES from CSV")
 
         prediction = model.predict_batch_from_smiles(smiles)
