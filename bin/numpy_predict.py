@@ -261,7 +261,26 @@ class NumpyFingerprints:
         print("MODEL PREDICTION")
         print("-" * 50)
         starting_time = time.time()
-        output, intermediate = self.forward(fps)
+        # Dynamic chunking based on memory constraints
+        max_memory_gb = 8
+        fp_size = fps.shape[1] if len(fps) > 0 else self.FP_len + 10
+        bytes_per_fp = fp_size * 4 # float 32
+        max_batch_size = max(1, int((max_memory_gb * 1024**3) // (bytes_per_fp * 8)))  # Factor of 8 for safety
+        
+        outputs = []
+        intermediates = []
+        
+        for i in tqdm(range(0, len(fps), max_batch_size), desc="Processing batches"):
+            chunk = fps[i:i + max_batch_size]
+            chunk_output, chunk_intermediate = self.forward(chunk)
+            outputs.append(chunk_output)
+            if return_intermediate:
+                intermediates.append(chunk_intermediate)
+        
+        # Concatenate all results
+        output = np.concatenate(outputs, axis=0)
+        if return_intermediate:
+            intermediate = np.concatenate(intermediates, axis=0)
         forward_time = time.time() - starting_time
         print(f"Batch forward pass time: {forward_time:.4f} seconds")
         print(f"Average per molecule: {forward_time*1000 / len(smiles_list):.4f} ms")
