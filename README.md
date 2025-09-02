@@ -37,8 +37,8 @@ We provide model checkpoints for MolPrice via [Figshare](https://figshare.com/ar
 1. SECFP fingerprint (with or w/o 2D features)
 2. Morgan Fingerprint (with or w/o 2D features)
 
-Once the model is downloaded, place in **./models** directory. \n
-These models take about 1.3 ms per molecule.
+Once the model is downloaded, place in **./models** directory.
+<br>These models take about 1.3 ms per molecule.
 
 ## Predicting Molecular Prices
 One can run the code per molecule or using batch prediction. In case of batch prediction, please first save all molecules in a .csv file.
